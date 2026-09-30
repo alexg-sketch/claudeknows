@@ -5,6 +5,8 @@ an action from that label (and how confident the model is).
 
 ## Notes from Alex
 <!-- Add notes here. Claude reads this section first on every run. -->
+- 2026-09-30: Focus is only on getting the model to understand what it's looking at
+  (accurate classification). The decision layer is parked until Alex says otherwise.
 
 ## Tasks
 - [x] 1. Project setup: package layout, `requirements.txt`, pytest config, `.gitignore`
@@ -13,8 +15,8 @@ an action from that label (and how confident the model is).
 - [ ] 4. Training script (`python -m claudeknows.train`): epochs, lr, batch size, device auto-detect, `--max-batches` for smoke runs, saves a checkpoint
 - [ ] 5. Evaluation script: overall accuracy, per-class accuracy, confusion matrix
 - [ ] 6. Prediction helper: load checkpoint, run on a single image file, return label + confidence
-- [ ] 7. Decision layer: map (label, confidence) to an action via a config (with a "not sure" fallback below a confidence threshold)
-- [ ] 8. End-to-end CLI: `image -> label -> action`
-- [ ] 9. Tests for model, training step, evaluation, and decision layer (all run on CPU in seconds)
+- [ ] 7. *(parked, see notes)* Decision layer: map (label, confidence) to an action via a config (with a "not sure" fallback below a confidence threshold)
+- [ ] 8. *(parked, see notes)* End-to-end CLI: `image -> label -> action`
+- [ ] 9. Tests for model, training step, and evaluation (all run on CPU in seconds)
 - [ ] 10. Colab notebook for full GPU training that clones the repo, trains, evaluates, and saves the checkpoint
 - [ ] 11. README: how to install, train, run predictions, and customise actions

@@ -1,5 +1,12 @@
 # Progress log
 
+## 2026-09-30
+**Alex's decision:** for now the goal is just getting the model to understand
+what it's looking at. I've recorded that under "Notes from Alex" in
+`ROADMAP.md` and parked the decision-layer tasks (7 and 8). The next runs
+focus on classification: CNN, training, evaluation, single-image prediction,
+and the Colab notebook.
+
 ## 2026-09-29
 **Done**
 - Created `ROADMAP.md` (11 tasks) and this log.
