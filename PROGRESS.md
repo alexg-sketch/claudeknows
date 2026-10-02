@@ -1,5 +1,26 @@
 # Progress log
 
+## 2026-10-02
+**Done**
+- Task 5 - `claudeknows/evaluate.py` (`python -m claudeknows.evaluate --checkpoint checkpoint.pt`):
+  loads a checkpoint, prints overall accuracy, per-class accuracy and a confusion matrix.
+- Task 6 - `claudeknows/predict.py` (`python -m claudeknows.predict IMAGE`):
+  classifies one image file (any size, resized to 32x32) and prints the label,
+  confidence and top-3 guesses. Also usable from Python via `predict_image`.
+- `tests/test_evaluate_predict.py`: 3 new tests; all 11 tests pass on CPU.
+  Smoke-ran train + evaluate with fake data.
+- Decision layer (tasks 7-8) still parked per Alex's note.
+
+**Next**
+- Task 10 (Colab notebook for GPU training) and task 9 (fill any remaining test gaps), then README (11).
+
+**Notes**
+- Builds on PR #2 (branch `claude/2026-09-30`, itself on PR #1's work); merge #2 first.
+- The real CIFAR-10 accuracy is still unknown: it needs the Colab run.
+
+**For Alex to decide**
+- Nothing blocking.
+
 ## 2026-09-30 (run 2)
 **Done**
 - Task 3 - `claudeknows/model.py`: `SmallCNN` (3 double-conv blocks with
