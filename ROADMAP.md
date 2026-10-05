@@ -17,6 +17,6 @@ an action from that label (and how confident the model is).
 - [x] 6. Prediction helper: load checkpoint, run on a single image file, return label + confidence
 - [ ] 7. *(parked, see notes)* Decision layer: map (label, confidence) to an action via a config (with a "not sure" fallback below a confidence threshold)
 - [ ] 8. *(parked, see notes)* End-to-end CLI: `image -> label -> action`
-- [ ] 9. Tests for model, training step, and evaluation (all run on CPU in seconds)
-- [ ] 10. Colab notebook for full GPU training that clones the repo, trains, evaluates, and saves the checkpoint
+- [x] 9. Tests for model, training step, and evaluation (all run on CPU in seconds)
+- [x] 10. Colab notebook for full GPU training that clones the repo, trains, evaluates, and saves the checkpoint
 - [ ] 11. README: how to install, train, run predictions, and customise actions

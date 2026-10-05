@@ -1,5 +1,26 @@
 # Progress log
 
+## 2026-10-05
+**Done**
+- Task 10 - `notebooks/train_colab.ipynb`: Colab notebook that clones the repo,
+  installs deps, trains on CIFAR-10 (20 epochs), evaluates, lets you upload an
+  image to classify, and downloads `checkpoint.pt`.
+- Task 9 - tests already cover model, training step, evaluation and prediction
+  (tasks 3-6); added `tests/test_notebook.py` checking the notebook is valid.
+  All 12 tests pass on CPU.
+
+**Next**
+- Task 11 (README: install, train, predict). Tasks 7-8 stay parked.
+
+**Notes**
+- Builds on PR #3 (branch `claude/2026-10-02`), which builds on #2; merge those first.
+- The notebook clones `main` by default, so it only works fully once the PRs
+  are merged (or change `BRANCH` in the first code cell).
+
+**For Alex to decide**
+- Please run the notebook in Colab (GPU) and tell me the accuracy; that tells us
+  whether the model needs to be bigger.
+
 ## 2026-10-02
 **Done**
 - Task 5 - `claudeknows/evaluate.py` (`python -m claudeknows.evaluate --checkpoint checkpoint.pt`):
