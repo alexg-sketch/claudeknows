@@ -1,5 +1,23 @@
 # Progress log
 
+## 2026-09-30 (run 2)
+**Done**
+- Task 3 - `claudeknows/model.py`: `SmallCNN` (3 double-conv blocks with
+  batch-norm, dropout, linear head; ~0.3M params) plus `count_parameters`.
+- Task 4 - `claudeknows/train.py`: `python -m claudeknows.train` with
+  `--epochs/--lr/--batch-size/--max-batches/--fake/--checkpoint`, GPU
+  auto-detect, AdamW + cosine schedule, saves checkpoint (weights + history).
+- `tests/test_model_train.py`: shape, param-range and a 2-batch smoke train.
+  All 8 tests pass; a fake-data smoke run of the CLI works.
+- Decision-layer tasks 7-8 remain parked per Alex's note.
+
+**Next**
+- Task 5 (evaluation: per-class accuracy, confusion matrix) and task 6
+  (single-image prediction helper).
+
+**Notes**
+- Builds on PR #1 (branch `claude/2026-09-29`); merge that first.
+
 ## 2026-09-30
 **Alex's decision:** for now the goal is just getting the model to understand
 what it's looking at. I've recorded that under "Notes from Alex" in
