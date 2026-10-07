@@ -24,11 +24,14 @@
 **Next**
 - Nothing left on the roadmap except the parked decision layer (tasks 7-8).
 
-**Alex's decision:** next, teach it new objects from his own photos. Added
-tasks 14-17 to `ROADMAP.md`. Friday: tasks 14 and 15.
+**Alex's decision:** next, teach it 3 new objects (water bottle, keys, shoes)
+using photos from the internet. Checked Google's Open Images: plenty of water
+bottles and shoes, but they're often tiny in the photo, so the plan crops to the
+object. Keys are thin: only ~100-150 downloadable, often cluttered. Added tasks
+14-17 to `ROADMAP.md`. Friday: tasks 14 and 15.
 
 **For Alex to decide**
-- Which objects to teach it, and start collecting about 30+ photos of each.
+- Optionally add ~30 of your own photos of your keys to make keys more reliable.
 
 ## 2026-10-07
 **Done**
