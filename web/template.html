@@ -1,0 +1,251 @@
+<title>claudeknows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: a lab bench. Photo goes in on the left, the model's 32x32 view and verdict come out on the right. */
+  :root {
+    --bg: #f2f4f7;
+    --surface: #ffffff;
+    --ink: #141a24;
+    --muted: #5a6575;
+    --line: #d8dde5;
+    --accent: #2346d8;
+    --accent-soft: #e2e8fc;
+    --unsure: #9a5200;
+    --unsure-soft: #fcefdc;
+    --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e1218; --surface: #161b24; --ink: #e7ebf1; --muted: #97a2b2; --line: #283040;
+      --accent: #7f99ff; --accent-soft: #1d2643; --unsure: #f2b25c; --unsure-soft: #33260f;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1218; --surface: #161b24; --ink: #e7ebf1; --muted: #97a2b2; --line: #283040;
+    --accent: #7f99ff; --accent-soft: #1d2643; --unsure: #f2b25c; --unsure-soft: #33260f;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 var(--body);
+    padding-inline: 16px; padding-block: 28px 40px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; display: grid; gap: 24px; }
+
+  header { display: grid; gap: 6px; }
+  h1 {
+    font: 800 clamp(30px, 6vw, 44px)/1 var(--display); letter-spacing: -0.02em; margin: 0;
+  }
+  h1 span { color: var(--accent); }
+  .lede { margin: 0; color: var(--muted); max-width: 60ch; text-wrap: pretty; }
+
+  .known { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 4px 0 0; padding: 0; }
+  .known li {
+    font: 500 12px/1 var(--mono); padding: 6px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); background: var(--surface);
+  }
+
+  .bench { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 720px) { .bench { grid-template-columns: minmax(0, 1fr); } }
+
+  .panel {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px; display: grid; gap: 14px; min-width: 0;
+  }
+  .label {
+    font: 500 11px/1 var(--mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+  }
+
+  .drop {
+    position: relative; display: grid; place-items: center; text-align: center;
+    min-height: 260px; border: 2px dashed var(--line); border-radius: 10px; padding: 16px;
+    cursor: pointer; transition: border-color .15s, background .15s; overflow: hidden;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop:focus-within { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop .prompt { display: grid; gap: 6px; pointer-events: none; }
+  .drop .prompt strong { font: 600 17px/1.2 var(--display); }
+  .drop .prompt span { color: var(--muted); font-size: 13px; }
+  .drop img { max-width: 100%; max-height: 320px; border-radius: 6px; pointer-events: none; display: block; }
+  .drop.has-photo { border-style: solid; min-height: 0; }
+  .change { font-size: 13px; color: var(--muted); margin: 0; text-align: center; }
+
+  .sees { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; }
+  .sees canvas {
+    width: 112px; height: 112px; image-rendering: pixelated; border-radius: 6px;
+    background: repeating-conic-gradient(var(--line) 0 25%, transparent 0 50%) 0 0 / 14px 14px;
+    border: 1px solid var(--line);
+  }
+  .sees p { margin: 0; color: var(--muted); font-size: 13px; }
+  .sees p b { color: var(--ink); font-weight: 600; }
+
+  .verdict { display: grid; gap: 4px; }
+  .verdict .name { font: 800 clamp(34px, 7vw, 52px)/1 var(--display); letter-spacing: -0.02em; margin: 0; }
+  .verdict .conf { font: 500 14px/1.3 var(--mono); color: var(--muted); margin: 0; }
+  .verdict.idle .name { color: var(--muted); font-size: 28px; }
+  .verdict.unsure .name { color: var(--unsure); }
+  .flag {
+    justify-self: start; font: 500 12px/1 var(--mono); padding: 6px 9px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .unsure .flag { background: var(--unsure-soft); color: var(--unsure); }
+
+  .bars { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+  .bars li {
+    display: grid; grid-template-columns: 88px minmax(0, 1fr) 48px; gap: 10px; align-items: center;
+    font-size: 13px;
+  }
+  .bars .track { display: block; height: 10px; border-radius: 5px; background: var(--bg); overflow: hidden; border: 1px solid var(--line); }
+  .bars .fill { display: block; height: 100%; width: 0; background: var(--muted); border-radius: 5px; transition: width .35s ease; }
+  .bars li:first-child .fill { background: var(--accent); }
+  .bars li:first-child { font-weight: 600; }
+  .bars .pct { font: 400 12px/1 var(--mono); text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .error { margin: 0; color: var(--unsure); font-size: 14px; }
+  footer { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>claude<span>knows</span></h1>
+    <p class="lede">Show it a photo and it tells you what it thinks it's looking at. It only knows these 10 things, so pick a photo of one of them:</p>
+    <ul class="known" id="known"></ul>
+  </header>
+
+  <div class="bench">
+    <section class="panel" aria-label="Your photo">
+      <div class="label">Your photo</div>
+      <label class="drop" id="drop">
+        <input type="file" id="photo" accept="image/*" aria-label="Choose a photo">
+        <div class="prompt" id="prompt">
+          <strong>Choose a photo</strong>
+          <span>or drag one here. On a phone you can take a picture.</span>
+        </div>
+        <img id="preview" alt="Your photo" hidden>
+      </label>
+      <p class="change" id="change" hidden>Tap the photo to try another one.</p>
+      <p class="error" id="error" hidden></p>
+    </section>
+
+    <section class="panel" aria-label="What it sees" aria-live="polite">
+      <div class="label">What the model sees</div>
+      <div class="sees">
+        <canvas id="tiny" width="32" height="32" aria-label="Your photo shrunk to 32 by 32 pixels"></canvas>
+        <p>Your photo shrunk to <b>32 × 32 pixels</b>, the size it learned from. If you can't tell what it is at this size, it probably can't either.</p>
+      </div>
+      <div class="verdict idle" id="verdict">
+        <span class="flag" id="flag" hidden></span>
+        <p class="name" id="name">Waiting for a photo</p>
+        <p class="conf" id="conf">Its guesses for all 10 will show below.</p>
+      </div>
+      <ul class="bars" id="bars"></ul>
+    </section>
+  </div>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+/*__CLASSIFIER_JS__*/
+</script>
+<script>
+(function () {
+  const META = __MODEL_META__;
+  const WEIGHTS = "__MODEL_WEIGHTS__";
+  const model = buildModel(META, decodeWeights(WEIGHTS));
+  const SURE = 0.5;
+
+  const $ = (id) => document.getElementById(id);
+  const drop = $("drop"), input = $("photo"), preview = $("preview"), tiny = $("tiny");
+
+  $("known").innerHTML = META.classes.map((c) => `<li>${c}</li>`).join("");
+  const acc = META.testAccuracy ? `${(META.testAccuracy * 100).toFixed(1)}% correct on 10,000 photos it never saw during training` : "";
+  $("footer").textContent = `SmallCNN trained on CIFAR-10${META.epochs ? ` for ${META.epochs} rounds` : ""}${acc ? ` · ${acc}` : ""} · runs entirely in your browser; your photo is never uploaded.`;
+
+  function renderBars(probs) {
+    const order = META.classes.map((c, i) => [c, probs ? probs[i] : 0]).sort((a, b) => b[1] - a[1]);
+    $("bars").innerHTML = order.map(([c, p]) =>
+      `<li><span>${c}</span><span class="track"><span class="fill" style="width:${(p * 100).toFixed(1)}%"></span></span><span class="pct">${probs ? (p * 100).toFixed(1) + "%" : "–"}</span></li>`
+    ).join("");
+    return order;
+  }
+  renderBars(null);
+
+  // Center-crop to a square, then shrink in halving steps so the 32x32 result isn't jagged.
+  function toTiny(img) {
+    const s = Math.min(img.naturalWidth || img.width, img.naturalHeight || img.height);
+    const sx = ((img.naturalWidth || img.width) - s) / 2, sy = ((img.naturalHeight || img.height) - s) / 2;
+    let size = s, src = img, x = sx, y = sy;
+    while (size / 2 >= 32) {
+      const c = document.createElement("canvas");
+      c.width = c.height = Math.floor(size / 2);
+      const g = c.getContext("2d");
+      g.imageSmoothingQuality = "high";
+      g.drawImage(src, x, y, size, size, 0, 0, c.width, c.height);
+      src = c; size = c.width; x = y = 0;
+    }
+    const g = tiny.getContext("2d", { willReadFrequently: true });
+    g.imageSmoothingQuality = "high";
+    g.clearRect(0, 0, 32, 32);
+    g.drawImage(src, x, y, size, size, 0, 0, 32, 32);
+    return g.getImageData(0, 0, 32, 32).data;
+  }
+
+  function classify(img) {
+    const pixels = toTiny(img);
+    const probs = softmax(forward(model, pixelsToInput(pixels, META.mean, META.std)));
+    const [[best, p], [second]] = renderBars(probs);
+    const sure = p >= SURE;
+    $("verdict").className = "verdict" + (sure ? "" : " unsure");
+    $("flag").hidden = false;
+    $("flag").textContent = sure ? "Fairly sure" : "Not sure";
+    $("name").textContent = best;
+    $("conf").textContent = sure
+      ? `${(p * 100).toFixed(1)}% sure`
+      : `Only ${(p * 100).toFixed(1)}% sure. Could also be a ${second}, or something it doesn't know.`;
+  }
+
+  function showError(msg) {
+    $("error").textContent = msg;
+    $("error").hidden = !msg;
+  }
+
+  function load(file) {
+    if (!file) return;
+    showError("");
+    if (!file.type.startsWith("image/")) return showError("That isn't a photo. Choose a JPG or PNG image.");
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      preview.src = url;
+      preview.hidden = false;
+      $("prompt").hidden = true;
+      $("change").hidden = false;
+      drop.classList.add("has-photo");
+      classify(img);
+    };
+    img.onerror = () => showError("This browser can't open that file. Try a JPG or PNG (iPhone HEIC photos may need converting).");
+    img.src = url;
+  }
+
+  input.addEventListener("change", () => { load(input.files[0]); input.value = ""; });
+  ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => load(e.dataTransfer.files[0]));
+  document.addEventListener("paste", (e) => {
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
+    if (item) load(item.getAsFile());
+  });
+})();
+</script>
