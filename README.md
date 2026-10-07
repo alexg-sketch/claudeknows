@@ -44,11 +44,26 @@ and `--max-batches` work here too for quick checks.
 ## Predict on one image
 
 ```bash
-python -m claudeknows.predict path/to/image.jpg --checkpoint checkpoint.pt
+python -m claudeknows.predict path/to/image.jpg --checkpoint models/cifar10_smallcnn.pt
 ```
 
 Prints the predicted label and confidence (plus the top few guesses). Images
 are resized to 32x32 first, so small, simple pictures work best.
+
+## Try it in your browser
+
+Open `web/index.html` in any browser (double-click it), choose a photo, and it
+shows what the model thinks it is, how sure it is, and the 32x32 version of
+the photo the model actually looks at. Everything runs in the browser; the
+photo is never uploaded anywhere.
+
+The page uses the trained model in `models/cifar10_smallcnn.pt` (87.8% test
+accuracy after 20 epochs on Colab). After training a new model, rebuild the
+page:
+
+```bash
+python -m claudeknows.export_web --checkpoint models/cifar10_smallcnn.pt
+```
 
 ## Tests
 
@@ -64,3 +79,5 @@ All tests run on CPU in seconds and need no dataset download.
 - `claudeknows/model.py` - `SmallCNN`
 - `claudeknows/train.py`, `evaluate.py`, `predict.py` - the command-line tools
 - `notebooks/train_colab.ipynb` - GPU training on Colab
+- `models/cifar10_smallcnn.pt` - the trained model (from the Colab run)
+- `claudeknows/export_web.py`, `web/` - the in-browser photo page (`web/classifier.js` runs the network in plain JavaScript)

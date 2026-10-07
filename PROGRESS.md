@@ -1,5 +1,33 @@
 # Progress log
 
+## 2026-10-07 (with Alex)
+**Done**
+- Alex ran the Colab notebook: **87.8% accuracy** on the 10,000 CIFAR-10 test
+  photos after 20 epochs (61% after epoch 1, 84% after 10, still rising slowly
+  at the end).
+- Task 12 - added the trained model as `models/cifar10_smallcnn.pt` (1.2 MB).
+- Task 13 - web page `web/index.html`: choose a photo (or take one on a phone)
+  and it shows the guess, how sure it is, all 10 scores, and the 32x32 image
+  the model actually sees. The network runs in plain JavaScript inside the
+  page (`web/classifier.js`, batch-norm folded in by
+  `claudeknows/export_web.py`), so it needs no server and the photo never
+  leaves the device. Tests check the JavaScript gives the same answers as
+  PyTorch. A real cat photo comes out "cat, 99.4%".
+- Fixed: PRs #2-#4 had been merged into a side branch, not `main`. PR #5 was
+  retargeted to `main`, and all PRs now target `main`.
+
+**Noticed**
+- A photo of a rocket comes out "ship, 98.4% sure". The model has to pick one
+  of its 10 things and can be very confident even when the answer is
+  none of them.
+
+**Next**
+- Nothing left on the roadmap except the parked decision layer (tasks 7-8).
+
+**For Alex to decide**
+- What Friday's run should work on: improve accuracy, train it on your own
+  kind of photos, or start the decision layer.
+
 ## 2026-10-07
 **Done**
 - Task 11 - wrote `README.md`: install, train (incl. fake-data smoke run and

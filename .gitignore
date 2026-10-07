@@ -6,3 +6,4 @@ checkpoints/
 *.pt
 .venv/
 .ipynb_checkpoints/
+!models/*.pt

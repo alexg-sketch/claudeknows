@@ -7,6 +7,8 @@ an action from that label (and how confident the model is).
 <!-- Add notes here. Claude reads this section first on every run. -->
 - 2026-09-30: Focus is only on getting the model to understand what it's looking at
   (accurate classification). The decision layer is parked until Alex says otherwise.
+- 2026-10-07: Alex trained the model on Colab: 87.8% test accuracy. Keep the trained
+  model in `models/cifar10_smallcnn.pt`. Every pull request must target `main`.
 
 ## Tasks
 - [x] 1. Project setup: package layout, `requirements.txt`, pytest config, `.gitignore`
@@ -20,3 +22,5 @@ an action from that label (and how confident the model is).
 - [x] 9. Tests for model, training step, and evaluation (all run on CPU in seconds)
 - [x] 10. Colab notebook for full GPU training that clones the repo, trains, evaluates, and saves the checkpoint
 - [x] 11. README: how to install, train, run predictions (customising actions waits on the parked decision layer)
+- [x] 12. Trained model in the repo (`models/cifar10_smallcnn.pt`, 87.8% test accuracy from Alex's Colab run)
+- [x] 13. Web page to try it: upload a photo, see the label, confidence and the 32x32 view (`web/index.html`)
