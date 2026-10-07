@@ -24,9 +24,11 @@
 **Next**
 - Nothing left on the roadmap except the parked decision layer (tasks 7-8).
 
+**Alex's decision:** next, teach it new objects from his own photos. Added
+tasks 14-17 to `ROADMAP.md`. Friday: tasks 14 and 15.
+
 **For Alex to decide**
-- What Friday's run should work on: improve accuracy, train it on your own
-  kind of photos, or start the decision layer.
+- Which objects to teach it, and start collecting about 30+ photos of each.
 
 ## 2026-10-07
 **Done**
