@@ -1,5 +1,26 @@
 # Progress log
 
+## 2026-10-07
+**Done**
+- Task 11 - wrote `README.md`: install, train (incl. fake-data smoke run and
+  the Colab notebook), evaluate, predict on one image, tests, and layout.
+  The "customise actions" part is left out because the decision layer is parked.
+- Checked the README commands against the real CLIs; all 12 tests pass on CPU.
+
+**Next**
+- All non-parked tasks are now done. Remaining: tasks 7-8 (decision layer, CLI), parked.
+- The real CIFAR-10 accuracy is still unknown: it needs a Colab run of
+  `notebooks/train_colab.ipynb`.
+
+**Notes**
+- Builds on `claude/2026-09-29`, which already contains the work from PRs #2-#4
+  (those were merged into that branch, not into `main`). Merge this PR into
+  `claude/2026-09-29`, then that branch into `main`.
+
+**For Alex to decide**
+- Run the Colab notebook and share the accuracy, or tell me to start the
+  decision layer (tasks 7-8) or to try improving the model.
+
 ## 2026-10-05
 **Done**
 - Task 10 - `notebooks/train_colab.ipynb`: Colab notebook that clones the repo,
