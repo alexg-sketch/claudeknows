@@ -13,9 +13,10 @@
   `notebooks/train_colab.ipynb`.
 
 **Notes**
-- Builds on `claude/2026-09-29`, which already contains the work from PRs #2-#4
-  (those were merged into that branch, not into `main`). Merge this PR into
-  `claude/2026-09-29`, then that branch into `main`.
+- PRs #2-#4 were merged into the branch `claude/2026-09-29`, not into `main`,
+  because each one was stacked on the previous one. This PR now targets `main`
+  directly and includes all of that work, so merging it brings `main` fully up
+  to date. From now on every PR targets `main`, so they can be merged in any order.
 
 **For Alex to decide**
 - Run the Colab notebook and share the accuracy, or tell me to start the
