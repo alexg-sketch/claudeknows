@@ -1,5 +1,87 @@
 # Progress log
 
+## 2026-10-07
+**Done**
+- Task 11 - wrote `README.md`: install, train (incl. fake-data smoke run and
+  the Colab notebook), evaluate, predict on one image, tests, and layout.
+  The "customise actions" part is left out because the decision layer is parked.
+- Checked the README commands against the real CLIs; all 12 tests pass on CPU.
+
+**Next**
+- All non-parked tasks are now done. Remaining: tasks 7-8 (decision layer, CLI), parked.
+- The real CIFAR-10 accuracy is still unknown: it needs a Colab run of
+  `notebooks/train_colab.ipynb`.
+
+**Notes**
+- PRs #2-#4 were merged into the branch `claude/2026-09-29`, not into `main`,
+  because each one was stacked on the previous one. This PR now targets `main`
+  directly and includes all of that work, so merging it brings `main` fully up
+  to date. From now on every PR targets `main`, so they can be merged in any order.
+
+**For Alex to decide**
+- Run the Colab notebook and share the accuracy, or tell me to start the
+  decision layer (tasks 7-8) or to try improving the model.
+
+## 2026-10-05
+**Done**
+- Task 10 - `notebooks/train_colab.ipynb`: Colab notebook that clones the repo,
+  installs deps, trains on CIFAR-10 (20 epochs), evaluates, lets you upload an
+  image to classify, and downloads `checkpoint.pt`.
+- Task 9 - tests already cover model, training step, evaluation and prediction
+  (tasks 3-6); added `tests/test_notebook.py` checking the notebook is valid.
+  All 12 tests pass on CPU.
+
+**Next**
+- Task 11 (README: install, train, predict). Tasks 7-8 stay parked.
+
+**Notes**
+- Builds on PR #3 (branch `claude/2026-10-02`), which builds on #2; merge those first.
+- The notebook clones `main` by default, so it only works fully once the PRs
+  are merged (or change `BRANCH` in the first code cell).
+
+**For Alex to decide**
+- Please run the notebook in Colab (GPU) and tell me the accuracy; that tells us
+  whether the model needs to be bigger.
+
+## 2026-10-02
+**Done**
+- Task 5 - `claudeknows/evaluate.py` (`python -m claudeknows.evaluate --checkpoint checkpoint.pt`):
+  loads a checkpoint, prints overall accuracy, per-class accuracy and a confusion matrix.
+- Task 6 - `claudeknows/predict.py` (`python -m claudeknows.predict IMAGE`):
+  classifies one image file (any size, resized to 32x32) and prints the label,
+  confidence and top-3 guesses. Also usable from Python via `predict_image`.
+- `tests/test_evaluate_predict.py`: 3 new tests; all 11 tests pass on CPU.
+  Smoke-ran train + evaluate with fake data.
+- Decision layer (tasks 7-8) still parked per Alex's note.
+
+**Next**
+- Task 10 (Colab notebook for GPU training) and task 9 (fill any remaining test gaps), then README (11).
+
+**Notes**
+- Builds on PR #2 (branch `claude/2026-09-30`, itself on PR #1's work); merge #2 first.
+- The real CIFAR-10 accuracy is still unknown: it needs the Colab run.
+
+**For Alex to decide**
+- Nothing blocking.
+
+## 2026-09-30 (run 2)
+**Done**
+- Task 3 - `claudeknows/model.py`: `SmallCNN` (3 double-conv blocks with
+  batch-norm, dropout, linear head; ~0.3M params) plus `count_parameters`.
+- Task 4 - `claudeknows/train.py`: `python -m claudeknows.train` with
+  `--epochs/--lr/--batch-size/--max-batches/--fake/--checkpoint`, GPU
+  auto-detect, AdamW + cosine schedule, saves checkpoint (weights + history).
+- `tests/test_model_train.py`: shape, param-range and a 2-batch smoke train.
+  All 8 tests pass; a fake-data smoke run of the CLI works.
+- Decision-layer tasks 7-8 remain parked per Alex's note.
+
+**Next**
+- Task 5 (evaluation: per-class accuracy, confusion matrix) and task 6
+  (single-image prediction helper).
+
+**Notes**
+- Builds on PR #1 (branch `claude/2026-09-29`); merge that first.
+
 ## 2026-09-30
 **Alex's decision:** for now the goal is just getting the model to understand
 what it's looking at. I've recorded that under "Notes from Alex" in
