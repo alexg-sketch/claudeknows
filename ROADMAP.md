@@ -26,10 +26,18 @@ an action from that label (and how confident the model is).
     expect ~100-150 key photos, many of them cluttered or keychain trinkets.
   - Alex's own photos can be added later in Google Drive (never commit them; the
     repo is PUBLIC).
-  - Alex will also film a few short videos of his keys (different places/angles),
-    in Google Drive under `claudeknows_photos/keys/`. Turn videos into photos:
+  - 2026-10-07 (Alex, before going quiet until Friday): build everything assuming
+    Alex WILL upload his own videos (and maybe photos) for ALL THREE objects, not
+    just keys: `claudeknows_photos/water_bottle/`, `claudeknows_photos/keys/`,
+    `claudeknows_photos/shoes/` in Google Drive. Training combines his
+    videos/photos with the Open Images photos for each object, and must still work
+    if a folder is missing or empty (internet photos only). Report results per
+    source (his footage vs internet) so we can see what helps.
+  - Alex will film a few short videos of each object (different places/angles). Turn videos into photos:
     ~2 frames per second, skip blurry frames (e.g. low variance of the Laplacian),
-    handle phone formats incl. iPhone .MOV/HEVC (ffmpeg in Colab). Frames from one
+    handle phone formats incl. iPhone .MOV/HEVC (use ffmpeg when available, as in
+    Colab; fall back to OpenCV `opencv-python-headless`; tests can generate a tiny
+    video with OpenCV). Frames from one
     video are near-duplicates, so split train/test BY VIDEO, never by frame.
   - Start from a small pretrained network (transfer learning). Pretrained weights
     download in Colab but NOT in the Claude sandbox (download.pytorch.org is
