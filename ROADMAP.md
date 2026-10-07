@@ -26,6 +26,11 @@ an action from that label (and how confident the model is).
     expect ~100-150 key photos, many of them cluttered or keychain trinkets.
   - Alex's own photos can be added later in Google Drive (never commit them; the
     repo is PUBLIC).
+  - Alex will also film a few short videos of his keys (different places/angles),
+    in Google Drive under `claudeknows_photos/keys/`. Turn videos into photos:
+    ~2 frames per second, skip blurry frames (e.g. low variance of the Laplacian),
+    handle phone formats incl. iPhone .MOV/HEVC (ffmpeg in Colab). Frames from one
+    video are near-duplicates, so split train/test BY VIDEO, never by frame.
   - Start from a small pretrained network (transfer learning). Pretrained weights
     download in Colab but NOT in the Claude sandbox (download.pytorch.org is
     blocked), so tests must use `weights=None`.
@@ -45,7 +50,7 @@ an action from that label (and how confident the model is).
 - [x] 11. README: how to install, train, run predictions (customising actions waits on the parked decision layer)
 - [x] 12. Trained model in the repo (`models/cifar10_smallcnn.pt`, 87.8% test accuracy from Alex's Colab run)
 - [x] 13. Web page to try it: upload a photo, see the label, confidence and the 32x32 view (`web/index.html`)
-- [ ] 14. Open Images downloader: for each object, get the photo list, download photos (skip 404s), crop to the object's box where one exists, save small JPEGs in one folder per object (`water_bottle/`, `keys/`, `shoes/`), cap ~300 per object, write a credits file (CC BY). Must also accept a folder of Alex's own photos in the same layout
+- [ ] 14. Open Images downloader: for each object, get the photo list, download photos (skip 404s), crop to the object's box where one exists, save small JPEGs in one folder per object (`water_bottle/`, `keys/`, `shoes/`), cap ~300 per object, write a credits file (CC BY). Must also accept a folder of Alex's own photos AND videos in the same layout (videos -> frames, see notes)
 - [ ] 15. Transfer-learning model + training: small pretrained network (e.g. MobileNetV3-small from torchvision) with a new final layer sized to the number of folders; save the class names inside the checkpoint; `predict` and `evaluate` work with it; tests run on CPU with `weights=None` and a tiny generated folder
 - [ ] 16. Colab notebook for the new objects: download the photos (task 14), show a few per object, train, show accuracy per object and the photos it got wrong, download the model
 - [ ] 17. Web page for the new model (choose how to run the bigger network in the browser)
