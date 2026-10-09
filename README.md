@@ -10,7 +10,7 @@ dog, frog, horse, ship, truck), along with how confident it is.
 ## Install
 
 ```bash
-pip install -r requirements.txt   # torch, torchvision, pytest
+pip install -r requirements.txt   # torch, torchvision, pytest, opencv (video frames)
 ```
 
 ## Train
@@ -65,6 +65,38 @@ page:
 python -m claudeknows.export_web --checkpoint models/cifar10_smallcnn.pt
 ```
 
+## New objects: water bottle, keys, shoes
+
+A second model learns these three from photos, starting from a small
+pretrained network (MobileNetV3-small). Training photos come from two places
+and are combined:
+
+1. **Internet photos** (Google's Open Images, CC BY):
+   `python -m claudeknows.openimages --out data/objects --cap 300`
+   (photos are cropped to the object; `data/objects/web/CREDITS.md` lists the
+   photographers).
+2. **Your own phone videos/photos**, optional, put in a folder with
+   `water_bottle/`, `keys/` and `shoes/` sub-folders (e.g. Google Drive's
+   `claudeknows_photos/`):
+   `python -m claudeknows.objects /path/to/claudeknows_photos`
+   Videos (including iPhone `.MOV`) become ~2 frames per second, blurry frames
+   are skipped. A missing or empty folder is fine.
+
+Then:
+
+```bash
+python -m claudeknows.train_objects --root data/objects --epochs 8 --checkpoint objects.pt
+python -m claudeknows.train_objects --evaluate --checkpoint objects.pt
+python -m claudeknows.predict photo.jpg --checkpoint objects.pt
+```
+
+The test photos are held out **by video** (all frames of a video are either
+training or test, never both), and the report shows accuracy per object and
+per source (internet vs your own footage), plus the photos it got wrong.
+
+**Privacy:** the repo is public. `claudeknows_photos/`, `data/` and video/HEIC
+files are git-ignored; never force-add them.
+
 ## Tests
 
 ```bash
@@ -81,3 +113,5 @@ All tests run on CPU in seconds and need no dataset download.
 - `notebooks/train_colab.ipynb` - GPU training on Colab
 - `models/cifar10_smallcnn.pt` - the trained model (from the Colab run)
 - `claudeknows/export_web.py`, `web/` - the in-browser photo page (`web/classifier.js` runs the network in plain JavaScript)
+- `claudeknows/openimages.py`, `frames.py`, `objects.py` - get internet photos, turn videos into frames, combine and split the data
+- `claudeknows/transfer.py`, `train_objects.py` - the pretrained-network model for the new objects

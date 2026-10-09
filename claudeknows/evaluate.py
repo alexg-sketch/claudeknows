@@ -3,6 +3,7 @@ import argparse
 
 import torch
 
+from . import transfer
 from .data import CIFAR10_CLASSES, NUM_CLASSES, get_dataloaders
 from .model import SmallCNN
 from .train import pick_device
@@ -73,7 +74,13 @@ def main(argv=None):
     p.add_argument("--max-batches", type=int, default=None)
     p.add_argument("--fake", action="store_true")
     p.add_argument("--num-workers", type=int, default=2)
+    p.add_argument("--objects-root", default="data/objects",
+                   help="photo folder, used for new-objects checkpoints")
     a = p.parse_args(argv)
+    if transfer.is_transfer_checkpoint(torch.load(a.checkpoint, map_location="cpu")):
+        from .train_objects import evaluate_objects
+        evaluate_objects(a.checkpoint, a.objects_root, num_workers=a.num_workers)
+        return
     evaluate(a.checkpoint, a.root, a.fake, a.batch_size, a.max_batches, a.num_workers)
 
 
