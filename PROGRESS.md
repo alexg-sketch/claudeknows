@@ -1,5 +1,19 @@
 # Progress log
 
+## 2026-10-10 (with Alex)
+**Alex's decision:** the main priority is now **spatial recognition**: (1) find
+where each object is in a photo and box it, (2) say how far away it is, and
+(3) recognise objects from any angle or position. Wrote the plan into
+`ROADMAP.md` ("Notes from Alex" and tasks 18-23). The classifier notebook
+(task 16) is still next, because it tests the photo/video pipeline that the
+spatial model reuses. Task 17 is replaced by task 23.
+
+**For Alex**
+- Extra things to film (details in `ROADMAP.md`): walk toward/away from each
+  object, put it off-centre and partly hidden, film 2-3 objects together in one
+  shot (`together/`), and take a few tape-measured distance photos
+  (`distance/keys_1.0m.jpg` etc.).
+
 ## 2026-10-09
 **Done** (roadmap tasks 14 and 15)
 - Task 14 - getting the photos:
