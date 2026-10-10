@@ -1,5 +1,50 @@
 # Progress log
 
+## 2026-10-09
+**Done** (roadmap tasks 14 and 15)
+- Task 14 - getting the photos:
+  - `claudeknows/openimages.py` downloads internet photos for water bottle,
+    keys and shoes, crops them to the object's box (bottle boxes / footwear
+    boxes; keys use the whole photo), skips the ones that no longer exist
+    (404), caps at 300 per object and writes `CREDITS.md`.
+  - `claudeknows/frames.py` turns videos into photos: ~2 per second, blurry
+    ones skipped, ffmpeg when installed (handles iPhone .MOV/HEVC and phone
+    rotation), otherwise OpenCV.
+  - `claudeknows/objects.py` imports your folder
+    (`claudeknows_photos/water_bottle|keys|shoes`; missing/empty folders are
+    fine), combines it with the internet photos, and splits train/test **by
+    video**, never by frame. If an object has only one video there is nothing
+    to hold out, so all of it is used for training and the report says "no
+    test photos" for it.
+  - Your photos/videos can never be committed: `claudeknows_photos/`, `data/`
+    and video/HEIC files are in `.gitignore`, and a test checks that.
+- Task 15 - the model: `claudeknows/transfer.py` + `train_objects.py` use a
+  small pretrained network (MobileNetV3-small) with a new last layer for the
+  3 objects. Class names are saved inside the checkpoint, so
+  `python -m claudeknows.predict` and `python -m claudeknows.evaluate` work with
+  it unchanged. Training first trains only the new layer, then fine-tunes all.
+  The report gives accuracy per object, per source (internet vs your footage),
+  a confusion matrix and the photos it got wrong.
+- 33 tests pass on CPU (tiny fake data and a generated mini video).
+  The CIFAR-10 model and web page are untouched.
+- Authorship check on main and this branch: all commits are by Claude
+  <noreply@anthropic.com> or alexg-sketch (merges by GitHub), so running the
+  Colab notebook is fine.
+
+**Checked against the real internet:** ran the downloader for real (cap 6 per object, 3 minutes, mostly scanning the huge label files): got 6 photos for each object, credits written. Bottles and keys look right; shoe crops are the weakest (many are blurry close-ups of a foot), so shoes may need a stricter size filter after the first Colab run.
+
+**Next**
+- Task 16: Colab notebook for the new objects (download photos, mount Drive
+  for your videos, train, show accuracy and mistakes, download the model).
+- Task 17: web page for the new model.
+
+**For Alex to decide**
+- Nothing blocking. Please don't run anything yet: the notebook for this
+  (task 16) comes next run. When it is merged, upload your videos to
+  `claudeknows_photos/` in Google Drive (a few videos per object, different
+  places and angles; at least 2 videos per object so one can be held out for
+  testing).
+
 ## 2026-10-07 (with Alex)
 **Done**
 - Alex ran the Colab notebook: **87.8% accuracy** on the 10,000 CIFAR-10 test

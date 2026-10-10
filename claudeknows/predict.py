@@ -5,6 +5,7 @@ import torch
 from PIL import Image
 
 from .data import CIFAR10_CLASSES, eval_transform
+from . import transfer
 from .evaluate import load_model
 from .train import pick_device
 
@@ -28,8 +29,14 @@ def main(argv=None):
     p.add_argument("image")
     p.add_argument("--checkpoint", default="checkpoint.pt")
     a = p.parse_args(argv)
-    model = load_model(a.checkpoint, pick_device())
-    r = predict_image(a.image, model)
+    device = pick_device()
+    state = torch.load(a.checkpoint, map_location=device)
+    if transfer.is_transfer_checkpoint(state):  # new-objects model (class names inside)
+        model, names, size, _ = transfer.load_transfer(a.checkpoint, device)
+        r = transfer.predict_transfer(a.image, model, names, size)
+    else:
+        model = load_model(a.checkpoint, device)
+        r = predict_image(a.image, model)
     print(f"{r['label']} ({r['confidence']:.1%})")
     for name, c in r["top"]:
         print(f"  {name:<11}{c:.1%}")

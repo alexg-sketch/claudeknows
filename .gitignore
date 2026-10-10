@@ -7,3 +7,15 @@ checkpoints/
 .venv/
 .ipynb_checkpoints/
 !models/*.pt
+
+# Alex's personal photos/videos must NEVER be committed (the repo is public).
+claudeknows_photos/
+data/
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.m4v
+*.heic
+*.HEIC
+*.hevc
