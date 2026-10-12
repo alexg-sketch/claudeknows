@@ -1,5 +1,17 @@
 # Progress log
 
+## 2026-10-12 (evening, with Alex)
+- Alex ran `notebooks/objects_colab.ipynb` in Colab. Result: **95.5% of the
+  133 held-out test photos right** after 8 rounds (91.7% after round 1). About
+  665 photos in total, which matches internet photos only (keys have far fewer
+  than bottles and shoes).
+- Added the trained model as `models/objects_mobilenet.pt` (6 MB). It holds
+  only the weights, the 3 object names and the accuracy history; no file names
+  or personal data.
+- Spot check: internet photos of keys, shoes and bottles come out 99-100% sure.
+  A cat photo came out "shoes, 62.5%": like the first model, it must always
+  pick one of its objects, even when the photo is none of them.
+
 ## 2026-10-12
 **Done** (roadmap tasks 16 and 18)
 - Task 16 - `notebooks/objects_colab.ipynb`: one "Run all" notebook that downloads
