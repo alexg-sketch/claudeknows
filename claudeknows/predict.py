@@ -39,7 +39,7 @@ def main(argv=None):
         r = predict_image(a.image, model)
     print(f"{r['label']} ({r['confidence']:.1%})")
     for name, c in r["top"]:
-        print(f"  {name:<11}{c:.1%}")
+        print(f"  {name:<14}{c:.1%}")
 
 
 if __name__ == "__main__":
