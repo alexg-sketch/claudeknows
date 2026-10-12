@@ -80,6 +80,31 @@ an action from that label (and how confident the model is).
   - The classifier work (tasks 14-16) is reused: same downloader, video frames,
     by-video split. Task 17 (web page for the classifier) is replaced by task 23.
 
+- 2026-10-12: **Long-term goal: a robot that walks around, collects data, and retrains
+  itself.** Phases: (1) finish spatial recognition (tasks 18-23); (2) **phone as the
+  robot's eyes** (tasks 24-29, below); (3) a wheeled robot kit running the model live;
+  (4) training on a schedule without Colab clicks. Only phase 2 is planned in detail.
+  Phase 2 design rules:
+  - Alex films a "walk" around the house on his phone and drops it in Google Drive
+    under `claudeknows_photos/walks/`. Everything after that is automatic (one
+    "Run all" in Colab for now; phase 4 removes the click).
+  - Self-labelling can teach the model its own mistakes. Guard against it:
+    - a FIXED "gold" test set that Alex has checked; never trained on, never changed
+      by the loop;
+    - only confident labels where two independent labellers agree (current model
+      + OWLv2) are used for training;
+    - a new model version replaces the old one ONLY if it beats it on the gold set
+      and no object gets worse by more than a small margin;
+    - every version is kept, dated, in Drive `claudeknows_models/`, so rollback is
+      always possible.
+  - Uncertain frames are set aside for Alex: a short review batch (aim for 20 or
+    fewer per walk) of yes/no questions, not drawing boxes.
+  - The loop writes a plain-language summary (what it learned, gold-set scores before
+    and after, promoted or not, review batch size) saved to Drive next to the models.
+  - Never commit Alex's footage, frames, labels from his footage, or the gold set to
+    the public repo.
+  - Start phase 2 only after task 23 is done.
+
 ## Tasks
 - [x] 1. Project setup: package layout, `requirements.txt`, pytest config, `.gitignore`
 - [x] 2. Dataset loader: CIFAR-10 train/test `DataLoader`s with normalisation + augmentation, plus a synthetic "fake" mode for offline tests
@@ -104,3 +129,9 @@ an action from that label (and how confident the model is).
 - [ ] 21. Distance: Depth Anything V2 Small (relative) + metric-indoor Small (rough metres) per detected box; near->far ordering; check against Alex's `distance/` photos and report the error in plain words
 - [ ] 22. Colab notebook for the spatial model: download + auto-box + train + evaluate + distance check; upload a photo and see boxes, labels, confidence and distances drawn on it; download the model
 - [ ] 23. Web page for the spatial model: show boxes and distances on an uploaded photo (decide how to run it in the browser, or link to the notebook if it's too big)
+- [ ] 24. *(Phase 2)* Walk import: read new videos from `claudeknows_photos/walks/`, turn them into frames (reuse frames.py), drop near-duplicate frames (perceptual hash), and keep a manifest so each walk is processed once
+- [ ] 25. *(Phase 2)* Gold test set: build it from Alex's checked footage and `distance/` photos plus a few held-out walks; freeze it with file hashes; evaluation always reports scores on it; a check refuses to train on any gold image
+- [ ] 26. *(Phase 2)* Auto-labelling of walk frames: current detector + OWLv2 must agree (same object, overlapping boxes, both confident); agreed frames become training labels; disagreements and low-confidence frames go into a small review batch for Alex (yes/no questions, aim for 20 or fewer per walk); cap the share of self-labelled data in training
+- [ ] 27. *(Phase 2)* Retrain + quality gate: train a candidate on all approved data, compare to the current model on the gold set, promote only if better overall and no object worse by more than ~2 points; save every version dated in Drive `claudeknows_models/`; one-line rollback
+- [ ] 28. *(Phase 2)* Learning-loop notebook: one "Run all" that does 24-27, shows the review batch with yes/no buttons, and writes a plain-language summary (scores before and after, promoted or not, what to review) to Drive
+- [ ] 29. *(Phase 2)* Drift report: track gold-set scores, label counts per object and how often self-labels were later corrected, across loop runs; warn in the summary if anything trends the wrong way

@@ -1,5 +1,14 @@
 # Progress log
 
+## 2026-10-12 (later, with Alex)
+**Alex's decision:** the long-term goal is a robot that walks around, collects
+data and retrains itself. Added **Phase 2: phone as the robot's eyes** to
+`ROADMAP.md` (tasks 24-29, starting after task 23). Alex films a walk, and the
+rest is automatic: frames, labelling (two labellers must agree), retraining,
+and a quality check against a fixed, human-checked test set before any new
+version replaces the old one. Phases 3 (wheeled robot) and 4 (training on a
+schedule) are noted but not planned in detail yet.
+
 ## 2026-10-12 (evening, with Alex)
 - Alex ran `notebooks/objects_colab.ipynb` in Colab. Result: **95.5% of the
   133 held-out test photos right** after 8 rounds (91.7% after round 1). About
