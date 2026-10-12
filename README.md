@@ -112,6 +112,7 @@ All tests run on CPU in seconds and need no dataset download.
 - `claudeknows/train.py`, `evaluate.py`, `predict.py` - the command-line tools
 - `notebooks/train_colab.ipynb` - GPU training on Colab
 - `models/cifar10_smallcnn.pt` - the trained model (from the Colab run)
+- `models/objects_mobilenet.pt` - the water bottle / keys / shoes model from Alex's Colab run of `notebooks/objects_colab.ipynb` (95.5% test accuracy). Try it: `python -m claudeknows.predict photo.jpg --checkpoint models/objects_mobilenet.pt`
 - `claudeknows/export_web.py`, `web/` - the in-browser photo page (`web/classifier.js` runs the network in plain JavaScript)
 - `claudeknows/openimages.py`, `frames.py`, `objects.py` - get internet photos, turn videos into frames, combine and split the data
 - `claudeknows/transfer.py`, `train_objects.py` - the pretrained-network model for the new objects
