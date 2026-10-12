@@ -42,7 +42,7 @@ def _safe(name):
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "x"
 
 
-def _open_photo(path):
+def _open_photo(path, max_side=MAX_SIDE):
     try:
         img = Image.open(path)
         img.load()
@@ -58,12 +58,12 @@ def _open_photo(path):
         else:
             return None
     img = ImageOps.exif_transpose(img).convert("RGB")
-    img.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
+    img.thumbnail((max_side, max_side), Image.LANCZOS)
     return img
 
 
 def import_own(drive_dir, root="data/objects", objects=OBJECT_NAMES, fps=2.0,
-               backend="auto", log=print):
+               backend="auto", log=print, max_side=MAX_SIDE):
     """Copy Alex's photos and turn his videos into frames. Returns a summary dict.
 
     Safe to re-run (done videos/photos are skipped). Missing folders are ignored.
@@ -86,7 +86,7 @@ def import_own(drive_dir, root="data/objects", objects=OBJECT_NAMES, fps=2.0,
             if ext in PHOTO_EXTS:
                 dest = out / f"photo_{_safe(f.stem)}.jpg"
                 if not dest.exists():
-                    img = _open_photo(f)
+                    img = _open_photo(f, max_side)
                     if img is None:
                         info["unreadable"].append(f.name)
                         continue
@@ -99,7 +99,7 @@ def import_own(drive_dir, root="data/objects", objects=OBJECT_NAMES, fps=2.0,
                     continue
                 try:
                     kept, skipped = extract_frames(f, out, fps=fps, prefix=prefix,
-                                                   backend=backend)
+                                                   backend=backend, max_side=max_side)
                 except Exception:
                     info["unreadable"].append(f.name)
                     continue
