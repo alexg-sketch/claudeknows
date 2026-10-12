@@ -85,7 +85,7 @@ def iter_video_frames(video, fps=2.0, backend="auto"):
 
 
 def extract_frames(video, out_dir, fps=2.0, blur_threshold=BLUR_THRESHOLD,
-                   backend="auto", prefix=None):
+                   backend="auto", prefix=None, max_side=MAX_SIDE):
     """Save the sharp frames of one video into `out_dir`.
 
     Files are named `<prefix>__f0001.jpg` (prefix defaults to the video's file
@@ -99,7 +99,7 @@ def extract_frames(video, out_dir, fps=2.0, blur_threshold=BLUR_THRESHOLD,
     prefix = prefix or video.stem
     sharp, best, skipped = [], None, 0
     for img in iter_video_frames(video, fps, backend):
-        img = shrink(img)
+        img = shrink(img, max_side)
         score = blur_score(img)
         if score >= blur_threshold:
             sharp.append(img)

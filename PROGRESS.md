@@ -1,5 +1,41 @@
 # Progress log
 
+## 2026-10-12
+**Done** (roadmap tasks 16 and 18)
+- Task 16 - `notebooks/objects_colab.ipynb`: one "Run all" notebook that downloads
+  the internet photos, adds your Drive footage if the folders exist (otherwise
+  internet only), shows sample photos per object, trains, prints accuracy per
+  object and per source, shows the photos it got wrong, lets you upload a photo to
+  try, and downloads the model (`objects.pt`).
+- Task 18 - `claudeknows/detection_data.py` (whole photos with boxes):
+  - `download`: whole Open Images photos (max side 640 px, not crops) with EVERY
+    bottle / footwear box in them (tiny boxes under 3% of the photo are ignored),
+    saved with a `boxes.json` per object folder, plus credits. Key photos have no
+    boxes in Open Images, so they are marked "pending" (task 19 will box them).
+  - `import`: your Drive footage, now including `together/` (several objects in
+    one shot) and `distance/` (photos named like `keys_1.0m.jpg`, read into
+    `distances.json`, **test only, never trained on**). Videos become frames at
+    640 px. Missing folders are fine. Everything unboxed stays "pending" and is
+    not used for training until task 19 boxes it.
+  - Splits are by video/photo, never by frame. `DetectionDataset` hands out
+    images + boxes in the format PyTorch detectors expect (a test runs a tiny
+    detector on it). `python -m claudeknows.detection_data summary` shows counts.
+  - Small supporting change: the frame/photo importers accept a bigger `max_side`.
+- All tests pass on CPU (new: `tests/test_detection_data.py`, notebook test).
+  Your photos/videos still cannot be committed (`.gitignore` + test).
+- Authorship check on main and this branch: all commits are by Claude
+  <noreply@anthropic.com> or alexg-sketch (merges by GitHub), so running the
+  notebook is fine.
+- Not checked against the real internet this time (only the fake-data tests ran).
+
+**Next**
+- Task 19: auto-boxing with OWLv2 in Colab for key photos and all of your footage
+  (plus a contact sheet to glance over), then task 20 (detector + training).
+
+**For Alex to decide**
+- Nothing blocking. Optional: run `objects_colab.ipynb` to see how well the plain
+  classifier does on your footage; the spatial work does not wait for it.
+
 ## 2026-10-10 (with Alex)
 **Alex's decision:** the main priority is now **spatial recognition**: (1) find
 where each object is in a photo and box it, (2) say how far away it is, and

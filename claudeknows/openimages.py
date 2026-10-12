@@ -47,8 +47,13 @@ def _lines(url, opener=urllib.request.urlopen):
 
 
 def find_candidates(cap, objects=OBJECTS, labels_url=LABELS_URL, boxes_url=BOXES_URL,
-                    opener=urllib.request.urlopen, log=print):
-    """Return {object: {image_id: box or None}} (box = (x0, x1, y0, y1) in 0..1)."""
+                    opener=urllib.request.urlopen, log=print, all_boxes=False,
+                    min_box_side=0.0):
+    """Return {object: {image_id: box or None}} (box = (x0, x1, y0, y1) in 0..1).
+
+    With `all_boxes=True` (object detection) the value is instead the LIST of
+    every box in the photo whose sides are at least `min_box_side` (0..1).
+    """
     want = cap * OVERSAMPLE
     label_to_obj = {l: o for o, c in objects.items() for l in c["labels"]}
     labelled = {o: set() for o in objects}
@@ -74,6 +79,7 @@ def find_candidates(cap, objects=OBJECTS, labels_url=LABELS_URL, boxes_url=BOXES
         log("scanning the Open Images box file (large; takes a minute)...")
         box_to_obj = {objects[o]["box"]: o for o in boxes}
         needs_full = any(objects[o]["labels"] for o in boxes)
+        last_id = None
         for row in csv.reader(_lines(boxes_url, opener)):
             obj = box_to_obj.get(row[2]) if len(row) > 11 else None
             if obj is None or row[0] == "ImageID":
@@ -83,6 +89,16 @@ def find_candidates(cap, objects=OBJECTS, labels_url=LABELS_URL, boxes_url=BOXES
             if objects[obj]["labels"] and row[0] not in labelled[obj]:
                 continue
             x0, x1, y0, y1 = (float(row[i]) for i in (4, 5, 6, 7))
+            if all_boxes:
+                if x1 - x0 < min_box_side or y1 - y0 < min_box_side:
+                    continue
+                # the file is sorted by photo, so stop only once a photo is complete
+                if (not needs_full and row[0] != last_id
+                        and all(len(b) >= want for b in boxes.values())):
+                    break
+                last_id = row[0]
+                boxes[obj].setdefault(row[0], []).append((x0, x1, y0, y1))
+                continue
             area = (x1 - x0) * (y1 - y0)
             old = boxes[obj].get(row[0])
             if old is None or area > (old[1] - old[0]) * (old[3] - old[2]):
