@@ -244,6 +244,8 @@ def scan_detection(root="data/detection", boxed_only=True):
             for name, entry in sorted(load_boxes(d).items()):
                 if not (d / name).exists():
                     continue
+                if entry["by"] == "rejected":  # auto-boxer found nothing confident
+                    continue
                 if entry["by"] == "pending":
                     pending += 1
                     if boxed_only:
