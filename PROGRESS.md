@@ -1,5 +1,75 @@
 # Progress log
 
+## 2026-10-16
+**This includes everything from PR #12 (tasks 19-20) and PR #13 (research notes).**
+
+**Done** (roadmap tasks 21 and 22)
+- Task 21 - `claudeknows/distance.py`: how far away is each found object. No training.
+  - Two independent estimates per object: (1) Depth Anything V2 **Small** (the relative
+    model gives the near -> far order, the metric-indoor Small model gives rough metres);
+    (2) the research idea: the object's known real size (bottle 22 cm, shoe 28 cm, keys
+    8 cm) plus the photo's EXIF focal length. The second one only works for photos with
+    EXIF (phone photos yes; video frames and downloaded photos no, then the depth model is
+    used alone).
+  - The number shown is the mean of the two; if they differ by more than 1.5x the output
+    says "the two estimates disagree". Keys are always flagged as rough.
+  - `python -m claudeknows.distance check` scores both against your tape-measured
+    `distance/` photos in plain words: typical error in metres and %, how often the
+    near/far order is right, and the error after a scale fix fitted leave-one-out (never
+    on the photo being scored; those photos stay test-only).
+  - `draw_results` draws boxes with "1. keys ~1.2 m" labels (nearest = 1).
+- Task 22 - `notebooks/spatial_colab.ipynb`: one "Run all" notebook: Open Images photos with
+  boxes -> your Drive footage (optional) -> OWLv2 auto-boxes + contact sheets -> train
+  detector -> report (per object / size / position / video) -> distance check -> upload
+  a photo and see boxes + distances -> download `detector.pt`.
+- 56 tests pass on CPU (new: `tests/test_distance.py`, a notebook test). Depth models and
+  OWLv2 are blocked in the sandbox, so tests use fake depth maps; nothing here has run on
+  real models or data yet.
+- Authorship check on main and this branch (`git log`): all commits are by Claude
+  <noreply@anthropic.com> or alexg-sketch (merges by GitHub), so running the notebook is fine.
+
+**Next**
+- Task 23 (web page for the spatial model), and the research tasks 23a (training recipe:
+  warm-up, best-epoch pick) and 23b (paste objects into training photos). Phase 2 after that.
+
+**For Alex to decide**
+- Please run `notebooks/spatial_colab.ipynb` in Colab (GPU) once; it is the first time the
+  detector, OWLv2 and the depth models run for real, so send me the scores and the distance
+  report (or let Cowork Claude read the output). It works without your Drive footage, but
+  distance can only be checked once `distance/` photos exist.
+- Still open from the research PR: try RF-DETR Nano later if the first detector scores on
+  your own videos are weak?
+
+## 2026-10-14
+**Done** (roadmap tasks 19 and 20)
+- Task 19 - `claudeknows/autobox.py`: draws boxes on photos nobody has boxed yet
+  (Open Images keys and all of your footage) with OWLv2 using text prompts. Only
+  confident boxes are kept (score 0.3 or more, overlapping duplicates merged). In a
+  single-object folder only that object's boxes are kept; `together/` keeps all
+  three. Photos with nothing confident are marked "rejected" and left out of
+  training. `contact_sheet` makes a grid of photos with boxes drawn so you can
+  glance over them. OWLv2 downloads in Colab only; tests use a fake detector.
+- Task 20 - `claudeknows/detector.py`: Faster R-CNN (MobileNetV3) with a new head
+  for water_bottle / keys / shoes. Training augmentation moves the boxes with the
+  photo: flips, rotation up to 20 degrees, zoom 0.5x-1.5x, shifts, perspective,
+  colour. The report gives mAP@0.5 per object, per source (internet vs your
+  footage), by box size in the photo (far/middle/near), by position (centre/edge)
+  and per video/photo of yours. `python -m claudeknows.detector train|report`.
+- 49 tests pass on CPU (new: `tests/test_autobox_detector.py`, including a tiny
+  2-batch training run). Nothing was run against real models or data here:
+  pretrained weights and OWLv2 are blocked in the sandbox.
+- Authorship check: all commits on main and this branch are by Claude
+  <noreply@anthropic.com> or alexg-sketch (merges by GitHub), so running
+  notebooks is fine. (No notebook changes yet: task 22 will add the one for this.)
+
+**Next**
+- Task 21 (distance with Depth Anything V2 Small), then task 22 (the Colab
+  notebook that runs download, auto-box, train, evaluate and distance).
+
+**For Alex to decide**
+- Nothing blocking. Rotated boxes come out a bit loose (the box around the
+  rotated corners); I kept the 20-degree limit from your notes.
+
 ## 2026-10-12 (later, with Alex)
 **Alex's decision:** the long-term goal is a robot that walks around, collects
 data and retrains itself. Added **Phase 2: phone as the robot's eyes** to
