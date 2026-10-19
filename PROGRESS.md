@@ -1,5 +1,45 @@
 # Progress log
 
+## 2026-10-19
+**This run builds on the open PR #14** (which itself includes #12 and the research PR #13), so
+merging this one brings in tasks 19-22 too. Nothing from those was on `main` yet.
+
+**Done** (roadmap tasks 23a and 23b)
+- Task 23a - better detector training (`claudeknows/detector.py`): the learning rate now
+  eases in over the first 200 steps and then eases down; large bumps in learning are
+  clipped; the GPU uses half-precision maths (faster, same results; CPU is unchanged).
+  15% of the training photos/videos (chosen by video, never by frame) are held back; after
+  every epoch the model is scored on them, the best epoch's weights are kept, and training
+  stops after 4 epochs with no gain. The real test photos are still untouched until the
+  final report. The best epoch and per-epoch scores are saved inside `detector.pt`.
+- Task 23b - mixing objects into photos (`claudeknows/composite.py`, off by default;
+  `--composite 0.3` turns it on): with 30% chance it pastes 1-3 objects cut from OTHER
+  training photos into a photo, with soft edges, never overlapping something already
+  there, and adds their boxes. Meant to teach "bottle next to shoes" since most internet
+  photos show only one kind of object. Added a step 6b to `notebooks/spatial_colab.ipynb`
+  that trains a second detector this way and prints the same report, so the `together/`
+  rows can be compared with step 6. Keep it only if it helps there.
+- 64 tests pass on CPU (new: `tests/test_composite.py` and more detector tests). Nothing
+  was trained for real here (no GPU, pretrained weights blocked), so there are no
+  accuracy numbers yet.
+- Authorship check: every commit on `main` and on this branch is by Claude
+  <noreply@anthropic.com> or alexg-sketch (merges by GitHub), so running the notebook
+  is fine.
+- Note: I started this run by re-doing tasks 19-20 before noticing PR #12 already had
+  them; I threw that duplicate work away, so nothing is doubled.
+
+**Next**
+- Task 23 (web page for the spatial model) needs your choice below. After that, Phase 2.
+- Open research PRs #15-#17 add more ideas (cleaner labels, honest scores, merging boxes
+  from several views); they are not merged into this branch.
+
+**For Alex to decide**
+- Task 23: the detector is too big to run comfortably inside a web page. OK to make the
+  page a simple "how to try it" page that links to the Colab notebook (my suggestion),
+  or do you want me to attempt an in-browser version (much more work, slower)?
+- Please merge this PR, then run `notebooks/spatial_colab.ipynb` in Colab with "Run all"
+  (about 10 epochs on a GPU) and tell me the numbers in the step 6 and 6b reports.
+
 ## 2026-10-16
 **This includes everything from PR #12 (tasks 19-20) and PR #13 (research notes).**
 
