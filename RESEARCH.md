@@ -3,6 +3,49 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-19
+
+**Summary.** Started from PR #16 (which includes #12-#15). Another quiet day for models: no new small
+detector beats the current choice, and for few-shot fine-tuning the old advice still stands (freeze most of the
+network when data is tiny, which the code mostly does). One new, cheap idea: at prediction time, look at each photo
+a few ways (as is, mirrored, slightly larger) and merge the boxes. It needs no retraining, directly serves
+"any angle / position", and costs only a few extra seconds per photo. Also checked Depth Anything V3 (new),
+whose licences differ by size; see "For Alex to decide".
+
+### Recommendations
+
+**1. Test-time augmentation with box merging (small effort, low risk).**
+- What: run the detector on the photo, its left-right mirror, and a ~1.3x upscaled copy; map the mirrored/scaled
+  boxes back to the original photo; merge overlapping boxes of the same label with Weighted Boxes Fusion (WBF),
+  which averages boxes instead of discarding all but one as NMS does. Published results (small-object and
+  competition detection, Open Images and COCO for WBF itself) show gains, mostly for small or partly hidden objects.
+  No study I found measures it on a small training set, so treat the gain as unproven: hence the "keep only if it helps" rule.
+- How: in `detector.py` add `detect_tta(model, image, classes, min_score, flips=True, scales=(1.0, 1.3))`
+  using the `ensemble-boxes` package (`weighted_boxes_fusion`, boxes normalised to 0-1, `iou_thr=0.55`,
+  `skip_box_thr=0.05`, `conf_type="avg"`). Un-flip x coordinates (x1' = 1 - x2, x2' = 1 - x1) before fusing; this
+  is the usual bug. Keep `detect` as the default; add `--tta` to the evaluation CLI and the notebook photo demo.
+- Acceptance: unit test that a mirrored fake detector's box is mapped back exactly; evaluation prints mAP with and without
+  TTA with the confidence range from 23f, and TTA stays off unless it helps overall without hurting any object.
+- Expected gain: modest (guess: +1-3 mAP on small/edge objects). Cost: 3x inference time, which only matters for the web page
+  (task 23: keep it off there) and phase 3 live use. Licence: `ensemble-boxes` is MIT.
+
+### Considered but not recommended
+- **Staged unfreezing / training only the last layers (TFA-style few-shot recipe):** the dataset here (hundreds to thousands of boxes) is above the few-shot regime; revisit only if 23a shows overfitting.
+- **Extreme R-CNN style synthetic samples and distillation:** the idea overlaps with 23b (composite pasting); the distillation part is too much work.
+- **Depth Anything V3 metric:** only a Large metric model exists (Apache-2.0, too big for a free GPU alongside the detector); no small metric one.
+- **YOLO-family TTA tutorials:** AGPL licence, no.
+
+### For Alex to decide
+- **Depth Anything V3 Small / Base (Apache-2.0, newer than the V2 Small you chose):** its Large and Giant versions are non-commercial, but Small and Base are Apache-2.0 and reported more accurate. Swapping is your model choice, so I changed nothing. Suggested path if you like it: after the first real distance results (task 21) are in, compare V2 Small and V3 Small on your `distance/` photos. Still open: RF-DETR / DEIMv2 from 10-16.
+
+### Sources
+- Weighted Boxes Fusion (Open Images / COCO): https://arxiv.org/abs/1910.13302
+- Small bird detection with TTA + WBF: https://arxiv.org/abs/2401.01018
+- Annotation-free spacecraft detection (WBF vs NMS discussion): https://arxiv.org/abs/2602.04699
+- Frustratingly Simple Few-Shot Object Detection: https://arxiv.org/abs/2003.06957
+- Extreme R-CNN: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11645051/
+- Depth Anything 3 licences by model size: https://github.com/ByteDance-Seed/Depth-Anything-3
+
 ## 2026-10-18
 
 **Summary.** Started from PR #15 (which already includes #14, #13 and #12). No better detector or
