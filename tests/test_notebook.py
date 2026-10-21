@@ -23,3 +23,17 @@ def test_objects_notebook_uses_real_commands_and_no_personal_data():
              for l in code.splitlines()]
     compile("\n".join(lines), "notebook", "exec")  # the Python cells at least parse
     assert "git add" not in code and "git push" not in code  # footage never leaves Colab
+
+
+def test_spatial_notebook_uses_real_commands_and_no_personal_data():
+    nb = json.loads((NB.parent / "spatial_colab.ipynb").read_text())
+    assert nb["nbformat"] == 4
+    code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    for cmd in ("claudeknows.detection_data download", "claudeknows.detection_data import",
+                "claudeknows.autobox run", "claudeknows.detector train",
+                "claudeknows.detector report", "claudeknows.distance check", "draw_results"):
+        assert cmd in code
+    lines = [l[:len(l) - len(l.lstrip())] + "pass" if l.lstrip().startswith(("!", "%")) else l
+             for l in code.splitlines()]
+    compile("\n".join(lines), "notebook", "exec")
+    assert "git add" not in code and "git push" not in code
