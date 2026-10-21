@@ -1,5 +1,34 @@
 # Progress log
 
+## 2026-10-21
+**This includes everything from PRs #12, #13, #14, #15, #16, #17, #18, #19 and #20.** Merging this
+one is enough; the others will close automatically. (They merged into this branch with no
+conflicts, and `main` is contained in it.)
+
+**Done** (roadmap tasks 23e and 23f)
+- Task 23e - gentler "any angle" training (`claudeknows/detector.py`): random tilts are now
+  at most 8 degrees (was 20) because tilted photos make the boxes sloppy. In their place the
+  training now sometimes (15%) turns a photo exactly 90 degrees either way, as phone photos
+  often are, which keeps boxes exact, and rarely (10%) flips it upside down. Switch them with
+  `--rot-degrees` and `--rot90-p`. A test checks a 90-degree turn gives exactly the right box.
+  The "try 0 / 8 / 20 degrees and keep the best" comparison needs real training, so it is for
+  the Colab run (use the new comparison below to judge it).
+- Task 23f - honest score ranges: `bootstrap_ci` re-draws whole videos/photos 1000 times and
+  gives a 95% range for the overall and per-object scores; `python -m claudeknows.detector
+  report` now prints it next to each score, e.g. "(range 40-70%)". Few videos means a wide
+  range. `compare_runs` takes two runs on the same test photos and says "helped", "hurt" or
+  "no clear difference"; use it for 23b/23e and later the task 27 quality gate. Tests: ranges
+  are wider with 3 videos than 30, and the three verdicts.
+- Not done: task 23 still waits on your answer below; 23c, 23d, 23g, 23h are still open.
+
+**Next**
+- 23c / 23d (cleaner labels), 23g (test-time augmentation), 23h (scene-aware split), then Phase 2.
+
+**For Alex to decide**
+- Task 23 (web page): OK for it to be a simple "how to try it" page linking to the Colab
+  notebook (my suggestion), or do you want an in-browser version (much more work)?
+- Authorship check: see the PR description.
+
 ## 2026-10-19
 **This run builds on the open PR #14** (which itself includes #12 and the research PR #13), so
 merging this one brings in tasks 19-22 too. Nothing from those was on `main` yet.

@@ -82,11 +82,12 @@ def test_augmentation_keeps_boxes_inside_image():
     tf = detector.train_transform()
     for _ in range(20):
         out_img, out = tf(img, target)
-        assert out_img.shape == img.shape
+        assert out_img.shape in {img.shape, (3, 160, 120)}  # a quarter turn swaps width and height
         assert len(out["boxes"]) == len(out["labels"])
         if len(out["boxes"]):
             b = out["boxes"]
-            assert (b[:, 0] >= 0).all() and (b[:, 2] <= 160).all() and (b[:, 3] <= 120).all()
+            h, w = out_img.shape[-2:]
+            assert (b[:, 0] >= 0).all() and (b[:, 2] <= w).all() and (b[:, 3] <= h).all()
 
 
 def test_train_and_report_end_to_end(tmp_path):
@@ -157,3 +158,50 @@ def test_cli_train_with_validation(tmp_path, monkeypatch):
                    "--batch-size", "2", "--no-pretrained", "--out", str(tmp_path / "d.pt")])
     ck = torch.load(tmp_path / "d.pt")
     assert ck["train_stats"]["epochs_run"] == 1 and len(ck["train_stats"]["val_map"]) == 1
+
+
+def test_ninety_degree_turn_gives_exact_box(monkeypatch):
+    for name in ("RandomHorizontalFlip", "RandomAffine", "RandomPerspective"):
+        monkeypatch.setattr(detector.v2, name, lambda *a, **k: detector.v2.Identity())
+    img = torch.rand(3, 120, 160)
+    target = {"boxes": torch.tensor([[40.0, 30.0, 100.0, 90.0]]), "labels": torch.tensor([2])}
+    tf = detector.train_transform(rot_degrees=0, rot90_p=1.0, vflip_p=0.0)
+    seen = set()
+    for _ in range(30):
+        out_img, out = tf(img, target)
+        assert out_img.shape == (3, 160, 120)  # turned a quarter: width and height swap
+        box = tuple(round(float(x)) for x in out["boxes"][0])
+        # clockwise or anticlockwise quarter turn of (40,30,100,90) in a 160x120 photo
+        assert box in {(30, 60, 90, 120), (30, 40, 90, 100)}
+        seen.add(box)
+    assert len(seen) == 2
+
+
+def _fake_results(n_groups, hit_rate):
+    from types import SimpleNamespace
+    rng = __import__("random").Random(1)
+    out = []
+    for g in range(n_groups):
+        s = SimpleNamespace(source="own", group=f"v{g}", path=f"v{g}.jpg")
+        gt = [("keys", (0.0, 0.0, 0.5, 0.5))]
+        pred = [("keys", 0.9, (0.0, 0.0, 0.5, 0.5) if rng.random() < hit_rate else (0.6, 0.6, 1.0, 1.0))]
+        out.append((s, gt, pred))
+    return out
+
+
+def test_bootstrap_range_wider_with_few_videos():
+    few = detector.bootstrap_ci(_fake_results(3, 0.5), ["keys"], n=200)
+    many = detector.bootstrap_ci(_fake_results(30, 0.5), ["keys"], n=200)
+    assert many["overall"][1] - many["overall"][0] < few["overall"][1] - few["overall"][0]
+    assert detector.bootstrap_ci(_fake_results(3, 0.5), ["keys"], n=50) == \
+        detector.bootstrap_ci(_fake_results(3, 0.5), ["keys"], n=50)  # seeded
+
+
+def test_compare_runs_verdicts():
+    good, bad = _fake_results(30, 1.0), _fake_results(30, 0.0)
+    assert detector.compare_runs(bad, good, ["keys"], n=200)[2] == "helped"
+    assert detector.compare_runs(good, bad, ["keys"], n=200)[2] == "hurt"
+    assert detector.compare_runs(good, good, ["keys"], n=200)[2] == "no clear difference"
+    text = detector.format_report(detector.build_report(good, ["keys"]),
+                                  detector.bootstrap_ci(good, ["keys"], n=50))
+    assert "range" in text

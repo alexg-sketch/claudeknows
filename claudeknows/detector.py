@@ -49,8 +49,13 @@ def build_detector(num_objects=len(OBJECT_NAMES), pretrained=True, min_size=480,
 
 # ----------------------------------------------------- box-aware augmentation
 
-def train_transform(composite=None):
-    """Random flip, rotation up to 20 degrees, zoom in/out, shift, perspective, colour.
+def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1):
+    """Random flip, small rotation, exact 90-degree turns, zoom in/out, shift, perspective, colour.
+
+    Small tilts only (`rot_degrees`, default 8): boxes get looser as the tilt grows, which
+    hurts above ~3 degrees (RESEARCH.md). Phone photos are often turned a full 90 degrees,
+    and those turns keep boxes exact, so they are done separately (`rot90_p` chance,
+    either direction) plus a rare upside-down flip (`vflip_p`).
 
     Boxes follow the image. A rotated box becomes the box around the rotated
     corners (a little loose, never cut). Boxes mostly pushed out of the frame
@@ -58,7 +63,10 @@ def train_transform(composite=None):
     """
     t = v2.Compose([
         v2.RandomHorizontalFlip(),
-        v2.RandomAffine(degrees=20, translate=(0.2, 0.2), scale=(0.5, 1.5)),
+        v2.RandomVerticalFlip(p=vflip_p),
+        v2.RandomApply([v2.RandomChoice([v2.RandomRotation((90, 90), expand=True),
+                                         v2.RandomRotation((270, 270), expand=True)])], p=rot90_p),
+        v2.RandomAffine(degrees=rot_degrees, translate=(0.2, 0.2), scale=(0.5, 1.5)),
         v2.RandomPerspective(distortion_scale=0.3, p=0.3),
         v2.ColorJitter(0.3, 0.3, 0.3, 0.05),
         v2.ClampBoundingBoxes(),
@@ -94,7 +102,8 @@ def lr_factor(it, total, warmup):
 
 def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=True,
                    max_batches=None, device=None, log=print, seed=0, val_samples=None,
-                   patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0):
+                   patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
+                   rot_degrees=8, rot90_p=0.15):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -110,7 +119,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     lr = 0.005 * batch_size / 8 if lr is None else lr
     model = build_detector(pretrained=pretrained).to(device)
     paste = CompositePaste(crop_pool(train_samples), composite, seed=seed) if composite > 0 else None
-    ds = DetectionDataset(train_samples, transform=train_transform(paste))
+    ds = DetectionDataset(train_samples, transform=train_transform(paste, rot_degrees, rot90_p))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
     per_epoch = min(len(loader), max_batches) if max_batches else len(loader)
     total = max(1, per_epoch * epochs)
@@ -295,13 +304,78 @@ def build_report(results, classes=OBJECT_NAMES):
     return report
 
 
-def format_report(report):
+def _group_key(sample):
+    """Photos from one video count as one unit; an internet photo is its own unit."""
+    return ("own", sample.group) if sample.source == "own" else ("web", str(sample.path))
+
+
+def _boot_scores(results, classes, n, seed, paired_with=None):
+    """n resampled scores (mean AP over objects, and per object); whole videos/photos are resampled."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    keys = sorted({_group_key(s) for s, _, _ in results})
+    by_key = defaultdict(list)
+    for i, (s, _, _) in enumerate(results):
+        by_key[_group_key(s)].append(i)
+    out = []
+    for _ in range(n):
+        picked = [keys[j] for j in rng.integers(0, len(keys), len(keys))]
+        idx = [i for k in picked for i in by_key[k]]
+        sets = [[results[i] for i in idx]]
+        if paired_with is not None:
+            sets.append([paired_with[i] for i in idx])
+        out.append([{c: average_precision(r, c) for c in classes} for r in sets])
+    return out
+
+
+def bootstrap_ci(results, classes=OBJECT_NAMES, n=1000, seed=0):
+    """95% range (2.5-97.5%) of mAP@0.5, overall and per object, by resampling whole videos/photos.
+
+    Returns {"overall" or object name: (low, high)}; None where an object has no boxes in a draw.
+    Few videos means a wide range: that is the honest answer about how much to trust a score.
+    """
+    import numpy as np
+    draws = [d[0] for d in _boot_scores(results, classes, n, seed)]
+    ci = {}
+    for name in ("overall", *classes):
+        vals = [_mean(list(d.values())) if name == "overall" else d[name] for d in draws]
+        vals = [v for v in vals if v is not None]
+        ci[name] = tuple(float(x) for x in np.percentile(vals, [2.5, 97.5])) if vals else None
+    return ci
+
+
+def compare_runs(results_a, results_b, classes=OBJECT_NAMES, n=1000, seed=0):
+    """Paired A/B verdict on overall mAP@0.5 for two runs over the SAME test samples (same order).
+
+    Returns (difference b - a, (low, high), verdict) where verdict is "helped",
+    "hurt" or "no clear difference" (the range of the difference excludes 0 or not).
+    """
+    import numpy as np
+    assert [s.path for s, _, _ in results_a] == [s.path for s, _, _ in results_b], \
+        "runs must cover the same samples"
+    diffs = []
+    for a, b in _boot_scores(results_a, classes, n, seed, paired_with=results_b):
+        ma, mb = _mean(list(a.values())), _mean(list(b.values()))
+        if ma is not None and mb is not None:
+            diffs.append(mb - ma)
+    lo, hi = (float(x) for x in np.percentile(diffs, [2.5, 97.5]))
+    full_a = _mean([average_precision(results_a, c) for c in classes]) or 0.0
+    full_b = _mean([average_precision(results_b, c) for c in classes]) or 0.0
+    verdict = "helped" if lo > 0 else "hurt" if hi < 0 else "no clear difference"
+    return full_b - full_a, (lo, hi), verdict
+
+
+def format_report(report, ci=None):
+    """`ci` (from `bootstrap_ci`) adds the 95% range next to the overall and per-object scores."""
     lines = []
     for sec, rows in report.items():
         lines.append(f"\n{sec}")
         for name, (ap, n) in rows.items():
             score = "  n/a " if ap is None else f"{100 * ap:5.1f}%"
-            lines.append(f"  {name:<28}{score}   ({n} boxes)")
+            key = "overall" if sec == "overall" else name if sec == "per object" else None
+            rng = ci.get(key) if ci and key else None
+            extra = f"  (range {100 * rng[0]:.0f}-{100 * rng[1]:.0f}%)" if rng else ""
+            lines.append(f"  {name:<28}{score}{extra}   ({n} boxes)")
     return "\n".join(lines).lstrip()
 
 
@@ -319,6 +393,10 @@ def main(argv=None):
     t.add_argument("--patience", type=int, default=4)
     t.add_argument("--composite", type=float, default=0.0,
                    help="chance (0-1) of pasting 1-3 objects from other training photos into a photo")
+    t.add_argument("--rot-degrees", type=float, default=8,
+                   help="largest random tilt in degrees (was 20; small tilts keep boxes tight)")
+    t.add_argument("--rot90-p", type=float, default=0.15,
+                   help="chance of an exact 90-degree turn")
     t.add_argument("--max-batches", type=int, default=None)
     t.add_argument("--no-pretrained", action="store_true")
     t.add_argument("--out", default="detector.pt")
@@ -333,12 +411,14 @@ def main(argv=None):
         stats = {}
         model, hist = train_detector(fit, a.epochs, a.batch_size, a.lr, not a.no_pretrained,
                                      a.max_batches, val_samples=val or None, patience=a.patience,
-                                     stats=stats, composite=a.composite)
+                                     stats=stats, composite=a.composite,
+                                     rot_degrees=a.rot_degrees, rot90_p=a.rot90_p)
         save_detector(model, a.out, hist, extra={"train_stats": stats})
         print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
         model, classes = load_detector(a.checkpoint)
-        print(format_report(build_report(predict_samples(model, test), classes)))
+        results = predict_samples(model, test)
+        print(format_report(build_report(results, classes), bootstrap_ci(results, classes)))
         print(f"\n(distance photos, used in task 21: {len(load_distance_photos(a.root))})")
 
 
