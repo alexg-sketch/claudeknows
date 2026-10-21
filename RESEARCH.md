@@ -3,6 +3,47 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-21
+
+**Summary.** Started from PR #19 (which includes #18 and #12-#17). Searched for new small-data detectors, small
+metric-depth models, per-class threshold tuning and self-training with noisy pseudo-boxes. Nothing changes the
+detector or depth choices: the Apache-2.0 detector field is still RF-DETR, D-FINE and DEIM(v2), and Depth Anything V2 Small
+(plus V3 Metric, still Large only) is unchanged. One idea is worth adding for the later "robot walks and retrains itself"
+phase: self-labels are more trustworthy when the same object is seen consistently over several neighbouring video frames.
+
+### Recommendations
+
+**1. Frame-to-frame consistency check for self-labels (task 26, small effort, low risk).**
+- What: "Look Around and Learn" (Pasqualino-style exploration self-training, 2023) and the 2026 box-level-surrogate work
+  both report that a detector trained on its own outputs drifts (confirmation bias) unless labels are cross-checked,
+  and that confidence thresholds alone do not remove noisy boxes. Walk videos give a free cross-check: a real object
+  persists across neighbouring frames, a false alarm usually flickers.
+- How: in the auto-labelling step (task 26), after the detector + OWLv2 agreement test, keep a box only if a box of the
+  same label with IoU > 0.3 (after allowing for small motion) exists in at least 2 of the 4 nearest sampled frames of the
+  same walk (pure numpy IoU matching, no tracker library). Boxes that fail go to the review batch only if confidence is
+  high; otherwise they are dropped. Log how many boxes each rule removed.
+- Expected gain: fewer wrong self-labels entering training, so the quality gate (task 27) rejects fewer candidates.
+  Effort: about 40 lines plus a test with a fake 5-frame walk (one steady box, one that appears once). Risk: low; very fast
+  motion may drop true boxes, which only costs a few labels. Licence: none (own code).
+
+### Considered but not recommended
+- **Per-class confidence thresholds chosen from F1 sweeps:** sensible, but with a few hundred test photos per object the choice is noisy; revisit once the gold set (task 25) exists.
+- **Ultralytics YOLO26 depth models:** licence not confirmed (Ultralytics is AGPL for code), skip.
+- **Depth Anything 3 Metric Large:** Apache-2.0 but Large (0.35B), too heavy for a free Colab alongside the detector.
+- **Co-teaching two YOLO models to filter noisy boxes (arXiv 2511.09955):** YOLO is AGPL; the idea overlaps with the OWLv2 + detector agreement rule.
+- **Metasurface depth (ECCV 2026):** needs special encoded image pairs, not ordinary photos.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Look Around and Learn: Self-Training Object Detection by Exploration: https://arxiv.org/pdf/2302.03566
+- Pseudo-label Correction and Learning for semi-supervised detection: https://ar5iv.labs.arxiv.org/html/2303.02998
+- Co-teaching to filter noisy boxes: https://papers.cool/arxiv/2511.09955
+- How to set a confidence threshold for object detection (Roboflow): https://blog.roboflow.com/how-to-set-a-confidence-threshold-for-object-detection/
+- DEIM (Apache-2.0): https://github.com/Intellindust-AI-Lab/DEIM
+- Depth Anything 3 metric Large: https://huggingface.co/APaul1/DA3METRIC-LARGE
+
 ## 2026-10-20
 
 **Summary.** Started from PR #18 (which includes #12-#17). No new model or licence news: searches for small-data
