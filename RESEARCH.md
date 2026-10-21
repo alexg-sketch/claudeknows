@@ -3,6 +3,51 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-20
+
+**Summary.** Started from PR #18 (which includes #12-#17). No new model or licence news: searches for small-data
+detector fine-tuning and small metric-depth models found nothing newer than what is already in this log (Depth
+Anything V3 metric is still Large-only; V2 Small stays the right size). One useful finding about evaluation: when
+frames come from video, a split "by video" still leaks if several of Alex's videos show the same room, table or
+shelf, because the backgrounds match. Recent papers (2025-2026) show this inflates scores. A cheap fix is to
+keep whole look-alike *groups of videos* on one side of the split.
+
+### Recommendations
+
+**1. Scene-aware train/test split (small effort, low risk).**
+- What: Glazner et al. ("Find the Leak, Fix the Split", 2025) and a 2026 driving-perception study show that
+  neighbouring or look-alike frames on both sides of a split make mAP look better than it is, and that exact-file or
+  per-video checks do not catch it. Here, Alex films each object in a few places, probably the same few rooms, so a
+  "different video" is often the same scene.
+- How: in `detection_data.py` add `scene_groups(samples, threshold)`: for each video/photo group compute one small
+  descriptor of its background (mean of a 16x16 downscaled RGB thumbnail of its frames, or a 3x8-bin colour histogram;
+  numpy/PIL only, no model download), then merge groups whose descriptors are closer than `threshold` (single-linkage;
+  `scipy.cluster.hierarchy` or a simple union-find). Make `split_detection` split by these merged scene groups (Open Images
+  photos stay one group each). Print how many own videos merged into how many scenes. If everything merges into a
+  single scene, fall back to the old by-video split and say so.
+- Acceptance: test with fake videos (two with the same background colour, one different): the two look-alikes always land on the
+  same side. The report states the number of test scenes next to each score; with fewer than 3 own test scenes, say the own-footage numbers
+  are rough.
+- Expected gain: no change in the model, but honest scores, which matters for the "keep only if it helps" calls
+  (23b, 23d, 23e, 23g) and the phase-2 gate (task 27). Licence: none needed.
+
+### Considered but not recommended
+- **Heavier fine-tuning tricks (self-supervised pre-training, P2 high-resolution head, mosaic/mix-up from 2023 two-stage paper):** needs far more data or compute than a free Colab session; mosaic/mix-up overlap with 23b.
+- **Unfreezing more backbone layers:** a Faster R-CNN transfer-learning study says the benefit shrinks with less data; the current mostly-frozen setup is right.
+- **Depth Pro / UniDepthV2 for metres:** metric and interesting, but licences and small-size variants not confirmed; V2 Small plus the size-prior estimate (task 21) is enough until real distance results exist.
+- **Weight averaging (EMA) of the detector:** no source found in this search; revisit only if validation mAP is jumpy.
+
+### For Alex to decide
+- Nothing new. Still open: Depth Anything V3 Small vs V2 Small (10-19), RF-DETR / DEIMv2 (10-16).
+
+### Sources
+- Find the Leak, Fix the Split (cluster-based splitting for video-derived data): https://arxiv.org/html/2511.13944v2
+- Leakage in KITTI (Volvo-linked study): https://arxiv.org/html/2410.23312v1
+- Domain shift between videos and images (few frames per shot, many videos): https://arxiv.org/pdf/1501.01186
+- Impact of dataset size and fine-tuning on Faster R-CNN: https://dspace.ut.ee/items/0ee00175-ba34-4ae5-8944-b4cee9c8b680/full
+- Two-stage training paradigm for small datasets: https://arxiv.org/pdf/2309.05652
+- Depth Anything V2 metric indoor small (Apache-2.0): https://huggingface.co/kerasformers/depth_anything_v2_metric_indoor_small
+
 ## 2026-10-19
 
 **Summary.** Started from PR #16 (which includes #12-#15). Another quiet day for models: no new small
