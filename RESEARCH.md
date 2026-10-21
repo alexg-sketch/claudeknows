@@ -3,6 +3,87 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-17
+
+**Summary.** Short follow-up. Started from PR #14 (which already includes PR #12 and the 10-16
+research PR #13). A fresh search for newer detectors, depth models and pseudo-label methods
+turned up nothing that beats the current choices (Faster R-CNN MobileNet, OWLv2, Depth Anything
+V2 Small): the Apache-2.0 detector field is still RF-DETR, D-FINE and DEIM(v2), all already
+considered or equivalent, and the small Depth Anything V2 metric (Hypersim) checkpoint is still
+the only one of its metric family that is Apache-2.0. Reading `autobox.py` and `train_detector`
+did show two cheap gaps in how the *labels* are built, which matter more than a new model for
+a dataset this small. Both are label fixes, not model changes.
+
+### Recommendations
+
+**1. Fill in the missing boxes in single-object folders (small effort, low risk).**
+- What: today `autobox_folder` keeps only the folder's own object (`expect`), and Open Images
+  water-bottle / shoe photos only carry human boxes for that one class. So a shoe standing next
+  to a bottle in the "water_bottle" folder is taught to the detector as *background*, which
+  directly fights the goal "several objects per photo".
+- How: in `autobox.py` add a second pass, `fill_missing(folder, detect, threshold=0.4)`, run for
+  every folder (web and own, including ones already boxed by humans): run OWLv2 with all three
+  prompts; for any detection of a class *other than* what the photo already has, with score >=
+  0.4 and IoU < 0.3 against every existing box, append it with `by="owlv2-extra"`. Never touch
+  or remove human boxes. Keep the stricter 0.4 (vs 0.3 elsewhere) because a wrong extra box
+  teaches a false positive. Include these boxes in contact sheets (`only_by` already filters by
+  source) so Alex can glance at them.
+- Acceptance: test with the fake detector that extra boxes are added only for other classes,
+  never overlap existing boxes, and human boxes stay byte-identical; the report prints how many
+  extra boxes were added per folder.
+- Expected gain: fewer "missed bottle/shoe" and cleaner multi-object behaviour; complements the
+  copy-paste idea (23b), which adds *synthetic* multi-object scenes. Risk: OWLv2 errors on
+  keys-like clutter; the 0.4 threshold and the by-tag (easy to drop later) limit that.
+  Licence: OWLv2 Apache-2.0, no new dependency.
+- Support: cross-detector agreement is the standard way to filter pseudo-labels, and the
+  closest study found 5.5% false auto-labels without filtering (see sources); an
+  "ignore" state for unverified objects is also how Open Images' own challenge scores it.
+
+**2. Add background-only (negative) photos (small effort, low risk).**
+- What: torchvision detectors accept images with zero boxes (`boxes` of shape `(0, 4)`,
+  `labels` of shape `(0,)`), but the training data currently has only photos that contain at
+  least one object. The detector never learns "this is none of my three things", the same
+  weakness the classifier showed (a cat came out as "shoes, 62.5%").
+- How: (a) download ~100-150 Open Images photos that are human-verified to contain none of
+  the targets: in the image-level label file the rows ending `,0.0` for a class are verified
+  absences, so take image IDs verified-absent for ALL of water bottle, key, keychain, shoe and
+  footwear (look up the footwear MID in the class-descriptions file); prefer ones that are
+  verified positive for indoor things (e.g. table, chair, floor, person) so they look like Alex's
+  setting. (b) Alex's own frames with no objects (a `claudeknows_photos/empty/` folder is
+  optional, not required; just skip it if missing). (c) In `DetectionDataset` allow
+  empty-box samples; cap negatives at ~15% of each epoch's samples. (d) Add to `build_report`
+  "false alarms per negative photo at score 0.5", and report it next to mAP.
+- Acceptance: a CPU test that one training step with an all-negative batch runs, and that the
+  report shows the false-alarm number. Never include negatives in the gold/test positives.
+- Expected gain: fewer false detections on random photos, which is what a walking robot sees
+  most of the time. Risk: low; too many negatives can lower recall, hence the 15% cap.
+  Licence: same Open Images (CC BY) credits as the rest.
+
+### Considered but not recommended
+- **DEIMv2 / D-FINE (Apache-2.0)**: strong COCO numbers, but no small-data fine-tuning
+  comparison found; same answer as RF-DETR yesterday (Alex's call, see below).
+- **Label-Verify-Correct / OWL-ST style self-training for the detector**: the full methods are
+  built for thousands of images; the simple version (agreement + extra boxes) is rec. 1 and
+  the phase-2 loop (task 26) already covers agreement.
+- **Loss-based pseudo-label filtering (Gaussian mixture, PLS)**: classification method, adds
+  complexity for few hundred boxes; revisit in phase 2.
+- **Self-supervised "detector teaches itself" (May 2026 preprint)**: aimed at adapting
+  vision-language models, not at small detectors.
+
+### For Alex to decide
+- Nothing new. The RF-DETR / DEIMv2 question from 10-16 still stands (only after the first
+  real detector scores are in).
+
+### Sources
+- Open Images V4 paper (positive and negative image-level labels): https://arxiv.org/pdf/1811.00982
+- Open Images challenge 2019 detection (unannotated classes are ignored): https://www.tensorflow.org/datasets/catalog/open_images_challenge2019_detection
+- Label, Verify, Correct (few-shot detection with pseudo-labels): https://openaccess.thecvf.com/content/CVPR2022/papers/Kaul_Label_Verify_Correct_A_Simple_Few_Shot_Object_Detection_Method_CVPR_2022_paper.pdf
+- OWL-ST, scaling open-vocabulary detection by self-training: https://arxiv.org/html/2306.09683v3
+- Auto-labelled detector data with multi-detector voting (thesis, 5.5% false labels): https://www.ifp.uni-stuttgart.de/lehre/masterarbeiten/573-wiedemann/
+- PLS, label-noise robustness: https://arxiv.org/pdf/2210.04578
+- DEIMv2 (DINOv3 real-time detector): https://arxiv.org/html/2509.20787v4
+- Depth Anything V2 licences (Small Apache-2.0): https://github.com/DepthAnything/Depth-Anything-V2 and https://docs.lightly.ai/train/stable/depth_estimation.html
+
 ## 2026-10-16
 
 **Summary.** First research pass. Starting from PR #12 (tasks 19-20: OWLv2 auto-boxing and a
