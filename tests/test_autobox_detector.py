@@ -1,10 +1,13 @@
 import json
+import pytest
 
 import torch
 from PIL import Image
 
 from claudeknows import autobox, detector
 from claudeknows import detection_data as dd
+
+_real_build = detector.build_detector
 
 
 def _folder(tmp_path, name="keys", n=3):
@@ -110,3 +113,47 @@ def test_train_and_report_end_to_end(tmp_path):
     assert "by size in photo" in text and "by position" in text and "overall" in text
     found = detector.detect(loaded, Image.open(samples[0].path), min_score=0.0)
     assert all(set(f) == {"label", "score", "box"} for f in found)
+
+
+def test_lr_factor_warms_up_then_decays():
+    f = [detector.lr_factor(i, 1000, 200) for i in range(1000)]
+    assert f[0] == pytest.approx(0.005) and f[199] == pytest.approx(1.0)
+    assert f[200] == pytest.approx(1.0, abs=0.01)
+    assert all(a >= b for a, b in zip(f[200:], f[201:]))  # only goes down after warm-up
+    assert f[-1] == pytest.approx(0.02, abs=0.01)
+    assert detector.lr_factor(5, 10, 200) > 0  # tiny runs (smoke tests) still work
+
+
+def _tiny_samples(tmp_path, n=4):
+    root = tmp_path / "data"
+    folder = root / "own" / "shoes"
+    folder.mkdir(parents=True)
+    boxes = {}
+    for i in range(n):
+        Image.new("RGB", (160, 120), (200, 50, 50)).save(folder / f"v{i}_1.jpg")
+        boxes[f"v{i}_1.jpg"] = {"by": "openimages", "boxes": [
+            {"label": "shoes", "box": [0.2, 0.2, 0.7, 0.8]}]}
+    dd.save_boxes(folder, boxes)
+    return dd.scan_detection(root)[0]
+
+
+def test_validation_keeps_best_epoch_and_stops_early(tmp_path, monkeypatch):
+    samples = _tiny_samples(tmp_path)
+    scores = iter([0.2, 0.5, 0.4, 0.3, 0.1, 0.9])  # best is epoch 2; stop 2 epochs later
+    monkeypatch.setattr(detector, "mean_ap", lambda model, s, min_score=0.05: next(scores))
+    stats = {}
+    model, hist = detector.train_detector(
+        samples[:2], epochs=6, batch_size=2, pretrained=False, max_batches=1, device="cpu",
+        log=lambda *_: None, val_samples=samples[2:], patience=2, stats=stats)
+    assert stats["best_epoch"] == 2 and stats["epochs_run"] == 4
+    assert stats["val_map"] == [0.2, 0.5, 0.4, 0.3] and len(hist) == 4
+
+
+def test_cli_train_with_validation(tmp_path, monkeypatch):
+    _tiny_samples(tmp_path, n=8)
+    monkeypatch.setattr(detector, "build_detector",
+                        lambda **kw: _real_build(pretrained=False, min_size=128, max_size=160))
+    detector.main(["train", "--root", str(tmp_path / "data"), "--epochs", "1", "--max-batches", "1",
+                   "--batch-size", "2", "--no-pretrained", "--out", str(tmp_path / "d.pt")])
+    ck = torch.load(tmp_path / "d.pt")
+    assert ck["train_stats"]["epochs_run"] == 1 and len(ck["train_stats"]["val_map"]) == 1

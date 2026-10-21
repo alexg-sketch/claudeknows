@@ -10,6 +10,7 @@ tests use `pretrained=False`).
     python -m claudeknows.detector report --root data/detection --checkpoint detector.pt
 """
 import argparse
+import math
 import random
 from collections import defaultdict
 
@@ -21,6 +22,7 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.transforms import v2
 
 from .autobox import iou
+from .composite import CompositePaste, crop_pool
 from .detection_data import (DetectionDataset, collate, load_distance_photos, scan_detection,
                              split_detection)
 from .objects import OBJECT_NAMES
@@ -47,12 +49,12 @@ def build_detector(num_objects=len(OBJECT_NAMES), pretrained=True, min_size=480,
 
 # ----------------------------------------------------- box-aware augmentation
 
-def train_transform():
+def train_transform(composite=None):
     """Random flip, rotation up to 20 degrees, zoom in/out, shift, perspective, colour.
 
     Boxes follow the image. A rotated box becomes the box around the rotated
     corners (a little loose, never cut). Boxes mostly pushed out of the frame
-    are dropped.
+    are dropped. `composite` (a `CompositePaste`) runs first and adds pasted objects.
     """
     t = v2.Compose([
         v2.RandomHorizontalFlip(),
@@ -64,6 +66,8 @@ def train_transform():
     ])
 
     def apply(img, target):
+        if composite is not None:
+            img, target = composite(img, target)
         h, w = img.shape[-2:]
         boxes = tv_tensors.BoundingBoxes(target["boxes"], format="XYXY", canvas_size=(h, w))
         img, out = t(tv_tensors.Image(img), {"boxes": boxes, "labels": target["labels"]})
@@ -74,33 +78,89 @@ def train_transform():
 
 # ---------------------------------------------------------------- training
 
-def train_detector(train_samples, epochs=10, batch_size=4, lr=1e-3, pretrained=True,
-                   max_batches=None, device=None, log=print, seed=0):
-    """Train on samples from `scan_detection`. Returns (model, history)."""
+def mean_ap(model, samples, min_score=0.05):
+    """Mean over objects of AP@0.5 on `samples` (objects with no boxes are skipped); None if no boxes."""
+    results = predict_samples(model, samples, min_score)
+    return _mean([average_precision(results, c) for c in OBJECT_NAMES])
+
+
+def lr_factor(it, total, warmup):
+    """Linear warm-up for `warmup` steps, then cosine decay to 2% of the starting rate."""
+    if it < warmup:
+        return (it + 1) / warmup
+    progress = (it - warmup) / max(1, total - warmup)
+    return 0.02 + 0.98 * 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
+
+
+def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=True,
+                   max_batches=None, device=None, log=print, seed=0, val_samples=None,
+                   patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0):
+    """Train on samples from `scan_detection`. Returns (model, history of train loss).
+
+    Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
+    warm-up then cosine decay, gradient clipping, and mixed precision on CUDA only.
+    With `val_samples` (split off the train set, by video/photo) it scores mAP@0.5
+    after every epoch, keeps the best epoch's weights and stops after `patience`
+    epochs without improvement. `composite` is the chance (0-1) of pasting
+    objects from other training photos into a photo (composite.py). `stats`, if given,
+    is filled with the per-epoch validation mAP ("val_map"), the best epoch and the number of epochs run.
+    """
     torch.manual_seed(seed)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    lr = 0.005 * batch_size / 8 if lr is None else lr
     model = build_detector(pretrained=pretrained).to(device)
-    ds = DetectionDataset(train_samples, transform=train_transform())
+    paste = CompositePaste(crop_pool(train_samples), composite, seed=seed) if composite > 0 else None
+    ds = DetectionDataset(train_samples, transform=train_transform(paste))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
+    per_epoch = min(len(loader), max_batches) if max_batches else len(loader)
+    total = max(1, per_epoch * epochs)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.SGD(params, lr=lr, momentum=0.9, weight_decay=1e-4)
-    history = []
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda it: lr_factor(it, total, warmup))
+    amp = device == "cuda" or str(device).startswith("cuda")
+    scaler = torch.amp.GradScaler(enabled=amp)
+    history, val_history = [], []
+    best, best_epoch, best_state = -1.0, 0, None
     for epoch in range(epochs):
         model.train()
-        total, n = 0.0, 0
+        loss_sum, n = 0.0, 0
         for i, (images, targets) in enumerate(loader):
             if max_batches is not None and i >= max_batches:
                 break
             images = [im.to(device) for im in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-            loss = sum(model(images, targets).values())
+            with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+                loss = sum(model(images, targets).values())
             opt.zero_grad()
-            loss.backward()
-            opt.step()
-            total += float(loss.detach())
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(params, grad_clip)
+            scaler.step(opt)
+            scaler.update()
+            sched.step()
+            loss_sum += float(loss.detach())
             n += 1
-        history.append(total / max(n, 1))
-        log(f"epoch {epoch + 1}/{epochs}: loss {history[-1]:.3f}")
+        history.append(loss_sum / max(n, 1))
+        msg = f"epoch {epoch + 1}/{epochs}: loss {history[-1]:.3f}"
+        if val_samples:
+            v = mean_ap(model, val_samples)
+            v = 0.0 if v is None else v
+            val_history.append(v)
+            msg += f", validation mAP {100 * v:.1f}%"
+            if v > best:
+                best, best_epoch = v, epoch + 1
+                best_state = {k: t.detach().clone() for k, t in model.state_dict().items()}
+            log(msg)
+            if epoch + 1 - best_epoch >= patience:
+                log(f"no improvement for {patience} epochs: stopping, keeping epoch {best_epoch}")
+                break
+        else:
+            log(msg)
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    if stats is not None:
+        stats.update(val_map=val_history, best_epoch=best_epoch or len(history),
+                     epochs_run=len(history))
     return model, history
 
 
@@ -252,7 +312,13 @@ def main(argv=None):
     t.add_argument("--root", default="data/detection")
     t.add_argument("--epochs", type=int, default=10)
     t.add_argument("--batch-size", type=int, default=4)
-    t.add_argument("--lr", type=float, default=1e-3)
+    t.add_argument("--lr", type=float, default=None,
+                   help="default 0.005 x batch/8")
+    t.add_argument("--val-frac", type=float, default=0.15,
+                   help="share of the training photos/videos held back to pick the best epoch")
+    t.add_argument("--patience", type=int, default=4)
+    t.add_argument("--composite", type=float, default=0.0,
+                   help="chance (0-1) of pasting 1-3 objects from other training photos into a photo")
     t.add_argument("--max-batches", type=int, default=None)
     t.add_argument("--no-pretrained", action="store_true")
     t.add_argument("--out", default="detector.pt")
@@ -263,10 +329,13 @@ def main(argv=None):
     samples, pending = scan_detection(a.root)
     train, test = split_detection(samples)
     if a.cmd == "train":
-        model, hist = train_detector(train, a.epochs, a.batch_size, a.lr, not a.no_pretrained,
-                                     a.max_batches)
-        save_detector(model, a.out, hist)
-        print(f"saved {a.out}")
+        fit, val = split_detection(train, a.val_frac) if a.val_frac > 0 else (train, [])
+        stats = {}
+        model, hist = train_detector(fit, a.epochs, a.batch_size, a.lr, not a.no_pretrained,
+                                     a.max_batches, val_samples=val or None, patience=a.patience,
+                                     stats=stats, composite=a.composite)
+        save_detector(model, a.out, hist, extra={"train_stats": stats})
+        print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
         model, classes = load_detector(a.checkpoint)
         print(format_report(build_report(predict_samples(model, test), classes)))
