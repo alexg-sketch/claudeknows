@@ -37,3 +37,23 @@ def test_spatial_notebook_uses_real_commands_and_no_personal_data():
              for l in code.splitlines()]
     compile("\n".join(lines), "notebook", "exec")
     assert "git add" not in code and "git push" not in code
+
+
+def test_spatial_notebook_saves_model_to_drive():
+    nb = json.loads((NB.parent / "spatial_colab.ipynb").read_text())
+    code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "claudeknows_models" in code and "detector.pt" in code
+
+
+def test_try_notebook_loads_saved_model_without_training():
+    nb = json.loads((NB.parent / "try_spatial.ipynb").read_text())
+    assert nb["nbformat"] == 4
+    code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    for name in ("load_detector", "detect", "depth_models", "estimate_distances", "draw_results",
+                 "claudeknows_models/detector.pt"):
+        assert name in code
+    assert "detector train" not in code  # quick: no training here
+    lines = [l[:len(l) - len(l.lstrip())] + "pass" if l.lstrip().startswith(("!", "%")) else l
+             for l in code.splitlines()]
+    compile("\n".join(lines), "notebook", "exec")
+    assert "git add" not in code and "git push" not in code
