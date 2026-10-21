@@ -1,5 +1,21 @@
 # Progress log
 
+## 2026-10-21 (evening, with Alex)
+- Alex merged everything up to PR #21; `main` is up to date and all tests pass.
+- **Alex's decision on task 23 (web page): option (a).** Done:
+  - `web/spatial.html`: a short page that explains what the spatial model does and links to
+    the two notebooks, plus what to film.
+  - `notebooks/try_spatial.ipynb`: quick "try it" notebook (a few minutes). It loads a
+    detector you already trained (from Drive `claudeknows_models/detector.pt`, or you upload
+    the file) and lets you upload photos to see boxes, labels and distances. No training.
+  - `notebooks/spatial_colab.ipynb` now saves the trained detector to Drive
+    `claudeknows_models/` (a dated copy and `detector.pt`) as well as downloading it.
+- The full in-browser version is task 23i, parked until we see real results.
+
+**Next**
+- Alex runs the spatial notebook (first real training of the detector). Then 23c/23d/23g/23h,
+  and Phase 2.
+
 ## 2026-10-21
 **This includes everything from PRs #12, #13, #14, #15, #16, #17, #18, #19 and #20.** Merging this
 one is enough; the others will close automatically. (They merged into this branch with no

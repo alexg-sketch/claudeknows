@@ -97,6 +97,15 @@ per source (internet vs your own footage), plus the photos it got wrong.
 **Privacy:** the repo is public. `claudeknows_photos/`, `data/` and video/HEIC
 files are git-ignored; never force-add them.
 
+## Spatial model: where is it, and how far away
+
+Open `web/spatial.html` for a one-page guide. In short:
+
+- Train (about 45-60 min on a Colab GPU): `notebooks/spatial_colab.ipynb`. It saves the
+  detector to Google Drive `claudeknows_models/`.
+- Try it (a few minutes, no training): `notebooks/try_spatial.ipynb` loads that saved detector
+  and draws boxes, labels and distances on photos you upload.
+
 ## Tests
 
 ```bash
