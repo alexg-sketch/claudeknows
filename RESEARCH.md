@@ -14,7 +14,7 @@ phase: self-labels are more trustworthy when the same object is seen consistentl
 ### Recommendations
 
 **1. Frame-to-frame consistency check for self-labels (task 26, small effort, low risk).**
-- What: "Look Around and Learn" (Pasqualino-style exploration self-training, 2023) and the 2026 box-level-surrogate work
+- What: "Look Around and Learn" (exploration self-training, 2023) and the 2026 box-level-surrogate work
   both report that a detector trained on its own outputs drifts (confirmation bias) unless labels are cross-checked,
   and that confidence thresholds alone do not remove noisy boxes. Walk videos give a free cross-check: a real object
   persists across neighbouring frames, a false alarm usually flickers.
