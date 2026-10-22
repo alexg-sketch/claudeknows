@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from claudeknows import distance as D
@@ -94,3 +95,32 @@ def test_draw_results_marks_the_image():
     out = D.draw_results(img, res)
     assert out.size == img.size and out.getpixel((10, 20)) != (255, 255, 255)
     assert img.getpixel((10, 20)) == (255, 255, 255)  # original untouched
+
+
+def test_open_photo_reads_heic_with_camera_info(tmp_path):
+    pytest.importorskip("pillow_heif")
+    D._register_heif()
+    img = Image.new("RGB", (400, 300), (90, 90, 90))
+    ex = Image.Exif()
+    ex.get_ifd(D.EXIF_IFD)[D.TAG_FOCAL_35MM] = 26
+    img.save(tmp_path / "IMG_0001.HEIC", exif=ex)
+    image, focal = D.open_photo(tmp_path / "IMG_0001.HEIC")
+    assert image.mode == "RGB" and image.size == (400, 300)
+    assert abs(focal - 26 / 36 * 400) < 1e-6
+
+
+def test_open_photo_turns_phone_photos_upright(tmp_path):
+    img = Image.new("RGB", (400, 300), (90, 90, 90))
+    ex = Image.Exif()
+    ex[0x0112] = 6  # Orientation: rotate 90 (phone held upright)
+    ex.get_ifd(D.EXIF_IFD)[D.TAG_FOCAL_35MM] = 26
+    img.save(tmp_path / "p.jpg", exif=ex)
+    image, focal = D.open_photo(tmp_path / "p.jpg")
+    assert image.size == (300, 400)
+    assert abs(focal - 26 / 36 * 400) < 1e-6  # from the sensor's long side, before rotating
+
+
+def test_open_photo_explains_unreadable_files(tmp_path):
+    (tmp_path / "notes.txt").write_text("not a photo")
+    with pytest.raises(ValueError, match="Could not open notes.txt"):
+        D.open_photo(tmp_path / "notes.txt")

@@ -19,9 +19,10 @@ fake depth functions. Colab runs the real ones.
 """
 import argparse
 import statistics
+from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 RELATIVE_MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
 METRIC_MODEL = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
@@ -31,6 +32,39 @@ LOW_CONFIDENCE = {"keys"}
 DISAGREE_RATIO = 1.5  # metres estimates further apart than this factor are flagged
 EXIF_IFD = 0x8769
 TAG_FOCAL_35MM = 0xA405
+
+
+# ------------------------------------------------------------ opening photos
+
+def _register_heif():
+    """Let PIL open iPhone .heic/.heif photos (needs `pip install pillow-heif`)."""
+    try:
+        from pillow_heif import register_heif_opener
+    except ImportError:
+        return False
+    register_heif_opener()
+    return True
+
+
+def open_photo(path):
+    """Open an uploaded photo: (upright RGB image, focal_px or None).
+
+    Works for JPG, PNG, WebP and iPhone HEIC. Raises ValueError with a plain message
+    when the file is not a photo PIL can read.
+    """
+    heif = _register_heif()
+    name = Path(path).name
+    try:
+        image = Image.open(path)
+        image.load()
+    except Exception as e:
+        hint = ("iPhone HEIC photos need pillow-heif: run `!pip install pillow-heif` and "
+                "re-run this cell, or export the photo as JPG."
+                if Path(path).suffix.lower() in (".heic", ".heif") and not heif else
+                "Use a JPG, PNG or HEIC photo.")
+        raise ValueError(f"Could not open {name} as a photo. {hint}") from e
+    focal = focal_px_from_exif(image)  # before rotating: 36 mm is the sensor's long side
+    return ImageOps.exif_transpose(image).convert("RGB"), focal
 
 
 # ------------------------------------------------------------ size prior
@@ -181,9 +215,7 @@ def check_distances(photos, detect_fn, relative_fn, metric_fn, min_score=0.3):
     """
     rows, missed = [], []
     for path, obj, true in photos:
-        image = Image.open(path)
-        focal = focal_px_from_exif(image)
-        image = image.convert("RGB")
+        image, focal = open_photo(path)
         dets = [d for d in detect_fn(image) if d["label"] == obj and d["score"] >= min_score]
         if not dets:
             missed.append(str(path))
