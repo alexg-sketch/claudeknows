@@ -205,3 +205,27 @@ def test_compare_runs_verdicts():
     text = detector.format_report(detector.build_report(good, ["keys"]),
                                   detector.bootstrap_ci(good, ["keys"], n=50))
     assert "range" in text
+
+
+def test_post_process_works_with_old_and_new_transformers():
+    class New:  # transformers 5: only the grounded name exists
+        def post_process_grounded_object_detection(self, outputs, threshold, target_sizes):
+            return ["new", threshold]
+
+    class Old:
+        def post_process_object_detection(self, outputs, threshold, target_sizes):
+            return ["old", threshold]
+    assert autobox.post_process(New(), None, 0.1, None) == ["new", 0.1]
+    assert autobox.post_process(Old(), None, 0.2, None) == ["old", 0.2]
+
+
+def test_readiness_flags_missing_objects_and_pending(tmp_path):
+    d = _folder(tmp_path, "keys", 2)
+    samples, pending = dd.scan_detection(tmp_path)
+    problems = dd.readiness_problems(samples, pending)
+    assert len(problems) == 4  # no bottle, keys or shoe boxes yet, and 2 pending
+    assert "2 photos are still waiting" in problems[-1]
+    autobox.autobox_folder(d, fake_detect, expect="keys", log=lambda *_: None)
+    samples, pending = dd.scan_detection(tmp_path)
+    assert [p for p in dd.readiness_problems(samples, pending) if "keys" in p] == []
+    assert dd.readiness_problems(samples, pending, objects=("keys",)) == []

@@ -320,6 +320,19 @@ def describe(samples_train, samples_test, pending=0):
     return "\n".join(lines)
 
 
+def readiness_problems(samples, pending=0, objects=OBJECT_NAMES):
+    """Plain-language reasons the dataset is not ready to train on ([] = ready)."""
+    problems = []
+    for name in objects:
+        if not any(label == name for s in samples for label, _ in s.boxes):
+            problems.append(f"No training photos with a {name} box. Auto-boxing (step 4) "
+                            "probably failed: look for a red error above.")
+    if pending:
+        problems.append(f"{pending} photos are still waiting for auto-boxing, so they would be "
+                        "left out. Auto-boxing (step 4) probably failed: look for a red error above.")
+    return problems
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
