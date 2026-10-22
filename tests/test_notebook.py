@@ -57,3 +57,15 @@ def test_try_notebook_loads_saved_model_without_training():
              for l in code.splitlines()]
     compile("\n".join(lines), "notebook", "exec")
     assert "git add" not in code and "git push" not in code
+
+
+def test_notebooks_open_iphone_photos_and_save_before_trying():
+    for name in ("spatial_colab.ipynb", "try_spatial.ipynb"):
+        nb = json.loads((NB.parent / name).read_text())
+        code = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+        assert "open_photo(" in code and "Image.open(name)" not in code
+    nb = json.loads((NB.parent / "spatial_colab.ipynb").read_text())
+    code = ["".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code"]
+    save = next(i for i, s in enumerate(code) if "claudeknows_models" in s)
+    upload = next(i for i, s in enumerate(code) if "open_photo(" in s)
+    assert save < upload  # a bad photo can't stop the model being saved
