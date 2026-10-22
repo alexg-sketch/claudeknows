@@ -6,7 +6,7 @@ boxes, with box-aware augmentation so the model copes with any angle, size and
 position. Pretrained weights download in Colab (blocked in the Claude sandbox:
 tests use `pretrained=False`).
 
-    python -m claudeknows.detector train --root data/detection --epochs 10 --out detector.pt
+    python -m claudeknows.detector train --root data/detection --epochs 15 --out detector.pt
     python -m claudeknows.detector report --root data/detection --checkpoint detector.pt
 """
 import argparse
@@ -29,11 +29,16 @@ from .objects import OBJECT_NAMES
 
 SIZE_BINS = (("far (small)", 0.0, 0.03), ("middle", 0.03, 0.15), ("near (big)", 0.15, 1.01))
 MIN_BOX_PIXELS = 8
+# (shortest, longest) side the model resizes photos to. Was (480, 640); bigger keeps far,
+# small objects visible (run 3: 28% found far vs 87% near).
+IMAGE_SIZE = (640, 960)
+OLD_IMAGE_SIZE = (480, 640)  # checkpoints saved before the size was stored
 
 
 # ------------------------------------------------------------------ model
 
-def build_detector(num_objects=len(OBJECT_NAMES), pretrained=True, min_size=480, max_size=640):
+def build_detector(num_objects=len(OBJECT_NAMES), pretrained=True, min_size=IMAGE_SIZE[0],
+                   max_size=IMAGE_SIZE[1]):
     """Faster R-CNN MobileNetV3-Large FPN; class 0 is background, 1..N the objects."""
     kwargs = dict(min_size=min_size, max_size=max_size)
     if pretrained:
@@ -174,13 +179,16 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
 
 
 def save_detector(model, path, history=(), extra=None):
+    t = model.transform
     torch.save({"state_dict": model.state_dict(), "classes": list(OBJECT_NAMES),
-                "history": list(history), **(extra or {})}, path)
+                "history": list(history), "image_size": [int(t.min_size[0]), int(t.max_size)],
+                **(extra or {})}, path)
 
 
 def load_detector(path, device="cpu"):
     ck = torch.load(path, map_location=device)
-    model = build_detector(len(ck["classes"]), pretrained=False)
+    min_size, max_size = ck.get("image_size", OLD_IMAGE_SIZE)
+    model = build_detector(len(ck["classes"]), pretrained=False, min_size=min_size, max_size=max_size)
     model.load_state_dict(ck["state_dict"])
     return model.to(device).eval(), ck["classes"]
 
@@ -384,7 +392,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("train")
     t.add_argument("--root", default="data/detection")
-    t.add_argument("--epochs", type=int, default=10)
+    t.add_argument("--epochs", type=int, default=15)
     t.add_argument("--batch-size", type=int, default=4)
     t.add_argument("--lr", type=float, default=None,
                    help="default 0.005 x batch/8")

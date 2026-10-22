@@ -36,7 +36,7 @@ from . import openimages
 from .frames import PHOTO_EXTS
 from .objects import OBJECT_NAMES, _group_of, import_own, split_by_group
 
-DETECT_SIDE = 640  # whole photos are kept bigger than classifier crops: far objects are small
+DETECT_SIDE = 960  # whole photos are kept bigger than classifier crops: far objects are small
 MIN_BOX_SIDE = 0.03  # ignore Open Images boxes thinner than 3% of the photo
 TOGETHER = "together"
 DISTANCE = "distance"
