@@ -44,6 +44,14 @@ def nms(found, iou_thresh=NMS_IOU):
     return keep
 
 
+def post_process(processor, outputs, threshold, target_sizes):
+    """OWLv2 boxes from raw outputs. transformers 5 renamed the processor's
+    `post_process_object_detection` to `post_process_grounded_object_detection`."""
+    fn = (getattr(processor, "post_process_grounded_object_detection", None)
+          or processor.post_process_object_detection)
+    return fn(outputs, threshold=threshold, target_sizes=target_sizes)
+
+
 def owl_detector(model_name=OWL_MODEL, device=None):
     """Load OWLv2 (Colab only). Returns detect(image, labels) -> [(label, score, (x0,y0,x1,y1) fractions)]."""
     import torch
@@ -59,8 +67,7 @@ def owl_detector(model_name=OWL_MODEL, device=None):
         inputs = processor(text=texts, images=image, return_tensors="pt").to(device)
         with torch.no_grad():
             out = model(**inputs)
-        res = processor.post_process_object_detection(
-            out, threshold=threshold, target_sizes=torch.tensor([[side, side]], device=device))[0]
+        res = post_process(processor, out, threshold, torch.tensor([[side, side]], device=device))[0]
         found = []
         for score, idx, box in zip(res["scores"], res["labels"], res["boxes"]):
             x0, y0, x1, y1 = (float(v) for v in box)
