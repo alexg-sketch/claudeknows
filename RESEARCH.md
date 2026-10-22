@@ -3,6 +3,58 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-22
+
+**Summary.** Started from PR #25 (bigger photos, 15 rounds), the newest open branch. That PR exists because run 3 found 87% of
+near objects but only 28% of far ones. This run looked for ways to help small, far objects beyond making the photo bigger.
+Nothing changes the detector or depth choices. The one useful, well-supported idea is "look closer": run the detector on
+zoomed-in overlapping pieces (tiles) of the photo as well as the whole photo, and train on zoomed windows so that
+training and test objects look the same size. Tiling has a lot of published support for small objects, costs no new
+training data, and needs only a small extra library we already planned (`ensemble-boxes`).
+
+### Recommendations
+
+**1. Add tiles to test-time augmentation (refines task 23g; small effort, low risk).**
+- What: SAHI (Slicing Aided Hyper Inference) cuts a photo into overlapping tiles, runs the detector on each tile and
+  merges the boxes. The original paper reports +5 to +7 AP on small objects from inference alone, with no retraining
+  of the detector. Newer work (2026) says the weak point is how tile results are merged and ranked, and that tiling
+  wastes time on sparse scenes; our photos have 1-3 objects and the tiles are only 4, so cost is small.
+- How: extend the planned `detect_tta` (23g) with a `tiles` option: full photo + 4 tiles (2x2, each 60% of the side,
+  ~20% overlap, resized to the model size), boxes mapped back, merged by `weighted_boxes_fusion` (iou_thr 0.55). I
+  suggest writing the tiling ourselves (about 30 lines) rather than installing `sahi`: it keeps Colab setup simple and
+  works directly with our torchvision model.
+- Expected gain: the best-supported fix for the far bin (28%); a guess of +5-10 points far recall. Risk: duplicate or
+  cut-off boxes at tile edges (WBF handles most). Cost: 5x inference time, so off by default and off in the web page.
+  Licence: `ensemble-boxes` MIT; SAHI itself MIT (not used).
+
+**2. Zoomed-window training crops (new task 23j; small effort, low risk).**
+- What: Roboflow (2026) and the MathWorks tiled-training guide both say tiling works best when training and inference
+  see objects at the same scale. Training photos are shown whole (with affine zoom 0.5-1.5), but a tile at test time
+  zooms objects by about 1.7x, a case training rarely shows.
+- How: see task 23j (random 50-70% window that keeps at least one whole box, p=0.25, behind a flag, ablation).
+- Expected gain: makes recommendation 1 work better and also gives far objects more training pixels. Risk: windows can
+  drop context; mitigated by the flag and the keep-only-if-helps rule. Licence: own code.
+
+### Considered but not recommended
+- **Smaller anchors (the torchvision MobileNet model uses sizes 32-512 on coarse feature maps):** plausible, but our "far"
+  bin is under 3% of the photo area (roughly up to 130 px at 640x960), which the current anchors cover; changing them
+  also forces new RPN weights and loses the COCO-pretrained head. Revisit only if tiles do not help.
+- **Full tiled training at native resolution (MathWorks YOLOX style):** needs photos larger than the 960 px we store; the zoomed windows in 23j get most of the effect.
+- **ROI-gated / content-adaptive SAHI (arXiv 2608.23923):** aimed at big sparse scenes (drones); our images are small.
+- **Training-free tile re-scoring preprint (Research Square):** unreviewed, one dataset; WBF is enough for now.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Slicing Aided Hyper Inference and Fine-tuning for Small Object Detection (SAHI): https://arxiv.org/abs/2202.06934
+- ROI-Gated SAHI (content-adaptive slicing): https://arxiv.org/pdf/2608.23923
+- Edge tiling during inference (Roboflow): https://roboflow.com/blog/edge-tiling-during-inference
+- Detect small objects using tiled training (MathWorks): https://www.mathworks.com/help/vision/ug/detect-small-objects-using-tiled-training-yolox.html
+- Cascaded zoom-in detector: https://www.arxiv.org/pdf/2303.08747
+- ISPRS 2026 tiling speed-up for SAHI-style pipelines: https://isprs-annals.copernicus.org/articles/XI-3-2026/81/2026/isprs-annals-XI-3-2026-81-2026.pdf
+- torchvision Faster R-CNN MobileNetV3 source (anchor sizes): https://github.com/pytorch/vision/blob/main/torchvision/models/detection/faster_rcnn.py
+
 ## 2026-10-21
 
 **Summary.** Started from PR #19 (which includes #18 and #12-#17). Searched for new small-data detectors, small

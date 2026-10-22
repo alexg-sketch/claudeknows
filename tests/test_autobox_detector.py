@@ -229,3 +229,15 @@ def test_readiness_flags_missing_objects_and_pending(tmp_path):
     samples, pending = dd.scan_detection(tmp_path)
     assert [p for p in dd.readiness_problems(samples, pending) if "keys" in p] == []
     assert dd.readiness_problems(samples, pending, objects=("keys",)) == []
+
+
+def test_checkpoint_remembers_image_size_and_old_ones_still_load(tmp_path):
+    model = detector.build_detector(pretrained=False, min_size=320, max_size=400)
+    detector.save_detector(model, tmp_path / "new.pt")
+    loaded, _ = detector.load_detector(tmp_path / "new.pt")
+    assert (loaded.transform.min_size[0], loaded.transform.max_size) == (320, 400)
+    ck = torch.load(tmp_path / "new.pt")
+    del ck["image_size"]  # saved before sizes were stored
+    torch.save(ck, tmp_path / "old.pt")
+    loaded, _ = detector.load_detector(tmp_path / "old.pt")
+    assert (loaded.transform.min_size[0], loaded.transform.max_size) == detector.OLD_IMAGE_SIZE
