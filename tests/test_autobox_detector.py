@@ -241,3 +241,81 @@ def test_checkpoint_remembers_image_size_and_old_ones_still_load(tmp_path):
     torch.save(ck, tmp_path / "old.pt")
     loaded, _ = detector.load_detector(tmp_path / "old.pt")
     assert (loaded.transform.min_size[0], loaded.transform.max_size) == detector.OLD_IMAGE_SIZE
+
+
+def test_fill_missing_adds_only_new_classes_and_never_touches_existing(tmp_path):
+    d = _folder(tmp_path, "water_bottle", 2)
+    data = dd.load_boxes(d)
+    human = {"label": "water_bottle", "box": [0.1, 0.1, 0.5, 0.5]}
+    for v in data.values():
+        v.update(by="openimages", boxes=[human])
+    dd.save_boxes(d, data)
+
+    def detect(image, labels):
+        return [("water_bottle", 0.95, (0.1, 0.1, 0.5, 0.5)),   # class already boxed
+                ("shoes", 0.9, (0.6, 0.6, 0.9, 0.9)),           # new class: added
+                ("keys", 0.9, (0.12, 0.12, 0.45, 0.45)),        # overlaps the human box: skipped
+                ("keys", 0.3, (0.7, 0.1, 0.9, 0.3))]            # below 0.4: skipped
+    stats = autobox.fill_missing(d, detect, log=lambda *_: None)
+    assert stats == {"photos": 2, "added": 2}
+    entry = dd.load_boxes(d)["v0_0001.jpg"]
+    assert entry["by"] == "openimages" and entry["boxes"][0] == human
+    extra = entry["boxes"][1:]
+    assert [b["label"] for b in extra] == ["shoes"] and extra[0]["by"] == autobox.EXTRA
+    assert autobox.fill_missing(d, detect, log=lambda *_: None)["added"] == 0  # checked once
+    assert autobox.contact_sheet(d).size[0] > 0
+
+
+def test_fill_missing_skips_pending_and_rejected(tmp_path):
+    d = _folder(tmp_path, "keys", 2)
+    data = dd.load_boxes(d)
+    data["v1_0001.jpg"]["by"] = autobox.REJECTED
+    dd.save_boxes(d, data)
+    calls = []
+    autobox.fill_missing(d, lambda im, l: calls.append(1) or [], log=lambda *_: None)
+    assert calls == []
+
+
+class _SeesBigOnly(torch.nn.Module):
+    """Fake detector: finds the white square only if it covers >10% of its input."""
+    def __init__(self):
+        super().__init__()
+        self.p = torch.nn.Parameter(torch.zeros(1))
+
+    def forward(self, images):
+        out = []
+        for im in images:
+            mask = im.min(0).values > 0.9
+            h, w = mask.shape
+            if mask.float().mean() > 0.1:
+                ys, xs = torch.where(mask)
+                out.append({"boxes": torch.tensor([[xs.min(), ys.min(), xs.max() + 1, ys.max() + 1]]).float(),
+                            "labels": torch.tensor([1]), "scores": torch.tensor([0.9])})
+            else:
+                out.append({"boxes": torch.zeros(0, 4), "labels": torch.zeros(0, dtype=torch.long),
+                            "scores": torch.zeros(0)})
+        return out
+
+
+def test_tiles_find_small_object_and_map_it_back():
+    pytest.importorskip("ensemble_boxes")
+    img = Image.new("RGB", (200, 100), (0, 0, 0))
+    img.paste((255, 255, 255), (130, 10, 170, 40))  # 6% of the photo, 17% of a tile
+    model = _SeesBigOnly()
+    assert detector.detect(model, img) == []
+    assert detector.detect_tta(model, img) == []
+    found = detector.detect_tta(model, img, tiles=True)
+    assert len(found) == 1 and found[0]["label"] == "water_bottle"
+    got = found[0]["box"]
+    for g, want in zip(got, (0.65, 0.1, 0.85, 0.4)):
+        assert abs(g - want) < 0.02
+
+
+def test_unmirror_is_exact_and_tta_restores_model_size():
+    pytest.importorskip("ensemble_boxes")
+    assert detector._unmirror((0.1, 0.2, 0.3, 0.4)) == pytest.approx((0.7, 0.2, 0.9, 0.4))
+    model = _SeesBigOnly()
+    model.transform = type("T", (), {"min_size": (640,), "max_size": 960})()
+    img = Image.new("RGB", (100, 100), (255, 255, 255))
+    found = detector.detect_tta(model, img)
+    assert found and model.transform.min_size == (640,) and model.transform.max_size == 960

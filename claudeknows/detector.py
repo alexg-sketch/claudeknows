@@ -209,6 +209,66 @@ def detect(model, image, classes=OBJECT_NAMES, min_score=0.5):
             if float(s) >= min_score]
 
 
+TTA_SCALE = 1.3
+TILE_FRAC = 0.6  # a tile is 60% of the photo side: 2x2 tiles overlap by 20%
+
+
+def _unmirror(box):
+    return (1.0 - box[2], box[1], 1.0 - box[0], box[3])
+
+
+def _tile_boxes():
+    """The four tile windows as fractions (x0, y0, x1, y1) of the photo."""
+    o = 1.0 - TILE_FRAC
+    return [(x, y, x + TILE_FRAC, y + TILE_FRAC) for y in (0.0, o) for x in (0.0, o)]
+
+
+def detect_tta(model, image, classes=OBJECT_NAMES, min_score=0.5, tiles=False):
+    """`detect` with test-time augmentation (task 23g). Off by default everywhere.
+
+    Runs the detector on the photo, its mirror image and a 1.3x larger version
+    (the model's resize is raised for that pass, so objects really look bigger).
+    With `tiles=True` it also runs on four overlapping tiles, each upscaled by
+    the model's own resize, which helps small, far-away objects. All boxes are
+    mapped back to the full photo and merged with weighted boxes fusion
+    (`ensemble-boxes`). Plain TTA averages scores; with tiles a box seen by one
+    tile alone would be averaged down below any threshold, so scores use the
+    maximum instead.
+    """
+    from ensemble_boxes import weighted_boxes_fusion
+
+    img = image.convert("RGB")
+    w, h = img.size
+    passes = [detect(model, img, classes, 0.05),
+              [dict(f, box=_unmirror(f["box"]))
+               for f in detect(model, img.transpose(Image.FLIP_LEFT_RIGHT), classes, 0.05)]]
+    transform = getattr(model, "transform", None)
+    if transform is not None:  # scale pass: make the model look at the photo larger
+        old = (transform.min_size, transform.max_size)
+        transform.min_size = tuple(int(m * TTA_SCALE) for m in old[0])
+        transform.max_size = int(old[1] * TTA_SCALE)
+        try:
+            passes.append(detect(model, img, classes, 0.05))
+        finally:
+            transform.min_size, transform.max_size = old
+    if tiles:
+        for x0, y0, x1, y1 in _tile_boxes():
+            tile = img.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
+            tw, th = (x1 - x0), (y1 - y0)
+            passes.append([dict(f, box=(x0 + f["box"][0] * tw, y0 + f["box"][1] * th,
+                                        x0 + f["box"][2] * tw, y0 + f["box"][3] * th))
+                           for f in detect(model, tile, classes, 0.05)])
+    clip = lambda b: [min(1.0, max(0.0, v)) for v in b]
+    boxes = [[clip(f["box"]) for f in p] or [[0, 0, 0, 0]] for p in passes]
+    scores = [[f["score"] for f in p] or [0.0] for p in passes]
+    labels = [[classes.index(f["label"]) for f in p] or [0] for p in passes]
+    b, sc, lb = weighted_boxes_fusion(boxes, scores, labels, iou_thr=0.55, skip_box_thr=0.05,
+                                      conf_type="max" if tiles else "avg")
+    found = [{"label": classes[int(l)], "score": float(s), "box": tuple(float(v) for v in bx)}
+             for bx, s, l in zip(b, sc, lb) if float(s) >= min_score and bx[2] > bx[0] and bx[3] > bx[1]]
+    return sorted(found, key=lambda f: -f["score"])
+
+
 # -------------------------------------------------------------- evaluation
 
 def box_area(b):
@@ -266,12 +326,15 @@ def average_precision(images, label, keep=lambda box, sample: True, iou_thresh=0
     return ap
 
 
-def predict_samples(model, samples, min_score=0.05):
-    """Run the detector on test samples. Returns [(sample, gt, preds)] for `average_precision`."""
+def predict_samples(model, samples, min_score=0.05, tta=None):
+    """Run the detector on test samples. Returns [(sample, gt, preds)] for `average_precision`.
+
+    `tta` is None (plain), "flip" (original + mirror + 1.3x) or "tiles" (also 4 tiles)."""
     out = []
     for s in samples:
         with Image.open(s.path) as im:
-            found = detect(model, im, min_score=min_score)
+            found = (detect_tta(model, im, min_score=min_score, tiles=(tta == "tiles"))
+                     if tta else detect(model, im, min_score=min_score))
         out.append((s, list(s.boxes), [(f["label"], f["score"], f["box"]) for f in found]))
     return out
 
@@ -411,6 +474,8 @@ def main(argv=None):
     r = sub.add_parser("report")
     r.add_argument("--root", default="data/detection")
     r.add_argument("--checkpoint", default="detector.pt")
+    r.add_argument("--tta", choices=["flip", "tiles"], default=None,
+                   help="test-time augmentation: flip = mirror + 1.3x, tiles = also 4 zoomed tiles")
     a = p.parse_args(argv)
     samples, pending = scan_detection(a.root)
     train, test = split_detection(samples)
@@ -425,8 +490,12 @@ def main(argv=None):
         print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
         model, classes = load_detector(a.checkpoint)
-        results = predict_samples(model, test)
+        results = predict_samples(model, test, tta=a.tta)
         print(format_report(build_report(results, classes), bootstrap_ci(results, classes)))
+        if a.tta:
+            plain = predict_samples(model, test)
+            print(f"\nwithout --tta {a.tta}:")
+            print(format_report(build_report(plain, classes), bootstrap_ci(plain, classes)))
         print(f"\n(distance photos, used in task 21: {len(load_distance_photos(a.root))})")
 
 

@@ -422,3 +422,31 @@ and the Colab notebook.
   horse, ship, truck). If you have a real use case in mind (e.g. "animal ->
   alert, vehicle -> log"), add it under "Notes from Alex" in `ROADMAP.md`.
   Otherwise I'll use a simple placeholder mapping.
+
+## 2026-10-23
+**Done** (tasks 23c and 23g; this PR also carries PR #25 and PR #26 - merging this one is enough)
+- Task 23c - `python -m claudeknows.autobox fill data/detection`: for photos that already have boxes
+  (including Open Images ones), look for the OTHER objects with OWLv2 and add a box (marked
+  `owlv2-extra`) only if that object has no box yet, is >= 0.4 confident and does not overlap an
+  existing box. Existing boxes are never changed; each photo is checked once. Reason: a bottle photo
+  with shoes in the background used to teach the detector that those shoes are "nothing". The
+  spatial Colab notebook now runs it right after auto-boxing; contact sheets show the added boxes.
+- Task 23g - `detect_tta` in `detector.py` and `python -m claudeknows.detector report --tta flip|tiles`.
+  `flip` = photo + mirrored + 1.3x bigger; `tiles` also runs four zoomed-in tiles to catch far-away
+  (small) objects. Results are merged with `ensemble-boxes` (added to requirements.txt). The report
+  prints the scores with and without it, with the usual confidence ranges. Off by default.
+- 5 new tests (fill rules, tiles find a small object at the right place, mirror is exact); 80 pass.
+
+**Next**
+- 23d (background-only photos), 23h (scene-aware split), 23j (zoomed-window training).
+
+**Notes**
+- Tiles use "max" instead of "average" scores in the merge: otherwise an object seen by one tile
+  only would be averaged down below the 0.5 cut-off.
+- Whether to KEEP TTA/tiles needs a real trained detector: run the report with and without and
+  look at the far-bin numbers.
+
+**For Alex to decide**
+- Nothing blocking. When you next run the spatial notebook, it will also run the new "fill" step.
+  Authorship check: every commit on main and on this branch is by Claude or Alex (GitHub web-merges
+  by "GitHub"), so running the notebook is fine.
