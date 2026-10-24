@@ -3,6 +3,57 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-24
+
+**Summary.** Started from PR #27 (newest open branch; it includes #25 and #26). Searched for new detector families and licences, open-vocabulary
+labellers, small metric-depth models, frame-sampling practice and training-stability tricks. Nothing changes the detector, depth or
+auto-labelling choices. One small, cheap training idea is worth a trial: keep a smoothed ("moving average") copy of the detector's
+weights while training. It costs a few lines, uses only PyTorch, and may help most when the tiny validation set makes the
+per-epoch score jumpy. The evidence for it is indirect (no clean small-data study found), so it is an ablation, not a promise.
+
+### Recommendations
+
+**1. Weight moving average (EMA) as a training option (new task 23k; tiny effort, low risk).**
+- What: keep a second copy of the weights that is updated after every optimiser step as `ema = d*ema + (1-d)*weights`.
+  The smoothed copy is usually a little better and much steadier than the raw weights, which matters when training uses only
+  hundreds of photos and a few dozen validation photos (best-epoch choice is noisy). Semi-supervised and few-annotation
+  detection papers (2023-2025) use an EMA with a cosine-scheduled keep rate and report about +0.7 point from the schedule; popular
+  YOLO/RT-DETR/D-FINE trainers switch EMA on by default. No study I found isolates its gain for plain fine-tuning on a
+  small set, so keep it only if validation shows it helps.
+- How: in `train_detector` (detector.py) add `ema_decay=0.0` (flag `--ema-decay`, 0 = off). Use
+  `torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay), use_buffers=True)` and call
+  `ema.update_parameters(model)` after `sched.step()`. Try 0.999 (about 1000 steps memory; with ~15 epochs of a few hundred
+  steps lower it to 0.99-0.995 if the run is short). Score validation mAP on `ema.module` instead of `model`, and keep
+  best-epoch weights from the EMA copy. Save the EMA weights in the checkpoint. torchvision detection models use frozen
+  BatchNorm, so there are no running statistics to worry about. Skip the first warm-up iterations
+  (copy weights until iteration `warmup`, then start averaging).
+- Acceptance: CPU test with `weights=None`: after a few steps with decay 0.9 the EMA weights differ from the raw weights and
+  lie between the start and current values; decay 0 leaves behaviour unchanged (existing tests untouched). Ablation
+  `--ema-decay` 0 / 0.995 on the validation set with the 23f range; keep it on only if overall mAP does not drop and the
+  best-epoch curve is steadier.
+- Expected gain: small (guess 0-2 mAP, mostly steadier results). Effort: about 15 lines. Risk: too slow a decay under-trains a
+  short run, hence the ablation. Licence: PyTorch (BSD-3), no new library.
+
+### Considered but not recommended
+- **SAM 3 for auto-boxing instead of OWLv2:** Meta's custom "SAM License" is not Apache-2.0 (limits on redistribution, export-control and military uses, can be changed by Meta); commercial suitability unclear and the model is much larger. Stay with OWLv2 (Apache-2.0).
+- **DEIMv2 / D-FINE:** the Atto-to-Nano sizes use HGNetv2 backbones, but the S-to-X sizes use DINOv3 backbones under the separate DINOv3 licence, and community repackages (e.g. OV-DEIM) can be CC BY-NC. Not worth the swap before the first real results; still on "For Alex to decide".
+- **Frame difference / uniform frame sampling for training (arXiv 2505.18302, 2025):** supports dropping near-identical video frames, but I could only read the abstract (the sandbox cannot fetch arXiv). Task 24 already plans perceptual-hash de-duplication for walks; revisit for the 2 fps training frames only if the own-footage score looks inflated after 23h.
+- **Depth Pro / UniDepthV2 / Depth Anything 3 metric Large:** licences or sizes still unconfirmed or too large (same conclusion as 10-16 to 10-21).
+- **More unfreezing / bigger augmentation recipes:** covered 10-20; the far-object work (23g tiles, 23j zoom windows) is the right next experiment.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Few-annotation detection study (EMA with cosine keep-rate schedule): https://arxiv.org/pdf/2310.19936
+- Training-based model refinement for semi-supervised detection: https://arxiv.org/pdf/2307.13755
+- Bag of tricks for real-time detection (EMA at several decays): https://arxiv.org/pdf/2508.19804
+- Two-stage training paradigm for small datasets: https://arxiv.org/pdf/2309.05652
+- Sampling strategies for efficient detector training (abstract only): https://arxiv.org/pdf/2505.18302
+- SAM 3 licence: https://huggingface.co/facebook/sam3/blob/main/LICENSE
+- DEIMv2 (Apache-2.0 code, DINOv3 backbones): https://arxiv.org/abs/2509.20787
+- OV-DEIM weights repackaging, CC BY-NC 4.0: https://huggingface.co/LibreYOLO/LibreOVDEIMs
+
 ## 2026-10-22
 
 **Summary.** Started from PR #25 (bigger photos, 15 rounds), the newest open branch. That PR exists because run 3 found 87% of
