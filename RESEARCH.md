@@ -3,6 +3,52 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-25
+
+**Summary.** Started from PR #28 (newest open branch; it includes #25, #26 and #27). Searched for class-imbalance fixes in detection,
+fine-tuning schedules for tiny datasets and metric-depth calibration. Nothing changes the detector or depth model choices.
+One idea is worth adding for the "how far away" part: right now the number shown in metres is the plain average of two guesses (the depth
+model and the object-size guess). Recent robot-navigation papers show that metric depth models can be off by metres in a new room unless
+their scale is corrected, so the way the two guesses are combined should be chosen from Alex's tape-measured photos rather than fixed in advance.
+
+### Recommendations
+
+**1. Choose how the two distance guesses are combined from the tape-measured photos (new task 23l, builds on done task 21; small effort, low risk).**
+- What: a 2026 robot study (arXiv 2603.19602) found a scale-corrected Depth Anything V2 Small gave 0.69 m mean error while the
+  off-the-shelf indoor metric Small model gave 4.19 m, blamed on camera and room differences. An evaluation across six indoor sets
+  (CSIR, 2025) found errors grow with distance (89% of errors within 0.5 m up to 2 m, 71% at 6 m). So the metric model's scale is
+  the weak point and a phone camera is not what it was trained on. The size-prior guess has the opposite weakness (needs EXIF,
+  and real object sizes vary). Averaging two numbers with different error habits is a reasonable default but not necessarily the best one.
+- How: in `distance.py` `check_distances`, besides `depth`, `size`, `shown`, also score (a) the geometric mean `sqrt(depth*size)`
+  (errors in distance are multiplicative, so averaging in log space treats "too near" and "too far" fairly) and (b) a weighted
+  log-space blend `exp(w*log(size) + (1-w)*log(depth))` with `w` fitted leave-one-out on the `distance/` photos (grid 0, 0.1 ... 1).
+  Print median % error for each (with the existing leave-one-out scale fix) and make the winner the number `estimate_distances`
+  shows by default (a module constant `BLEND_W`, default 0.5 = geometric mean until real data exist). Also: when one photo has two or more
+  detections with a size prior (bottle/shoe, not keys), fit ONE scale for the photo, `median(size_m / depth_m)`, apply it to the
+  depth-model metres of all objects in that photo (so keys get a calibrated number too) and flag `calibrated_by_photo=True`.
+- Acceptance: test with fake maps: geometric mean of 1 m and 4 m is 2 m; the blend weight picks 1.0 when the depth guess is wildly wrong and 0.0
+  when the size guess is; the per-photo scale makes a keys box in a photo with a bottle land at the right distance when the metric map is
+  uniformly 2x too large. Report keeps saying near/far order is reliable and metres approximate.
+- Expected gain: modest for metres (guess: a few points of % error), none for near/far order. Effort: about 40 lines. Risk: low; with few
+  `distance/` photos the fitted `w` is noisy, hence the default of 0.5 until there are 10+ photos. Licence: none (own code).
+
+### Considered but not recommended
+- **Repeat-factor sampling / E-IRFS for class imbalance (arXiv 2403.07113, 2503.21893):** the downloader already caps every object at ~300 photos, so classes are balanced; revisit only if Alex's own footage skews one class.
+- **Learned per-image depth calibration heads (arXiv 2601.01457):** trains new heads and needs captions; too much for the gain when a size prior is available.
+- **Progressive fine-tuning with plateau-aware LR (CVPR 2026, arXiv 2603.28182):** aimed at 1-10 shot cross-domain detection; the current warm-up + cosine + early stopping recipe (23a) is adequate at hundreds of boxes. I could not read its supplement.
+- **YOLO26-Depth:** Ultralytics, AGPL code.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Robot navigation with scale-corrected Depth Anything V2 (0.69 m vs 4.19 m): https://arxiv.org/pdf/2603.19602
+- Indoor metric depth error versus distance (2025 evaluation): https://researchspace.csir.co.za/signposting/describedby/28469156-78e2-4323-85c8-ed7e689b9378
+- Language as Prior, Vision as Calibration (per-image affine in inverse depth): https://arxiv.org/html/2601.01457v1
+- Class imbalance in object detection study: https://arxiv.org/pdf/2403.07113
+- Cross-domain few-shot detection, fine-tuning matters (CVPR 2026): https://arxiv.org/abs/2603.28182
+- Depth Anything V2 metric indoor small: https://huggingface.co/kerasformers/depth_anything_v2_metric_indoor_small
+
 ## 2026-10-24
 
 **Summary.** Started from PR #27 (newest open branch; it includes #25 and #26). Searched for new detector families and licences, open-vocabulary
