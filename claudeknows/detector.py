@@ -24,6 +24,7 @@ from torchvision.transforms import v2
 from .autobox import iou
 from .composite import CompositePaste, crop_pool
 from .detection_data import (DetectionDataset, collate, load_distance_photos, scan_detection,
+                             scan_negatives, scene_groups,
                              split_detection)
 from .objects import OBJECT_NAMES
 
@@ -82,8 +83,15 @@ def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1):
         if composite is not None:
             img, target = composite(img, target)
         h, w = img.shape[-2:]
-        boxes = tv_tensors.BoundingBoxes(target["boxes"], format="XYXY", canvas_size=(h, w))
-        img, out = t(tv_tensors.Image(img), {"boxes": boxes, "labels": target["labels"]})
+        empty = len(target["boxes"]) == 0
+        # background-only photo: torchvision skips empty box lists when a turn changes the
+        # image size, so give it a stand-in box and throw the result away afterwards
+        tb = torch.tensor([[0.0, 0.0, 1.0, 1.0]]) if empty else target["boxes"]
+        tl = torch.zeros(1, dtype=torch.int64) if empty else target["labels"]
+        boxes = tv_tensors.BoundingBoxes(tb, format="XYXY", canvas_size=(h, w))
+        img, out = t(tv_tensors.Image(img), {"boxes": boxes, "labels": tl})
+        if empty:
+            out = {"boxes": out["boxes"][:0], "labels": out["labels"][:0]}
         return img.as_subclass(torch.Tensor), {"boxes": out["boxes"].as_subclass(torch.Tensor),
                                                "labels": out["labels"]}
     return apply
@@ -108,7 +116,7 @@ def lr_factor(it, total, warmup):
 def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=True,
                    max_batches=None, device=None, log=print, seed=0, val_samples=None,
                    patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
-                   rot_degrees=8, rot90_p=0.15):
+                   rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -117,6 +125,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     after every epoch, keeps the best epoch's weights and stops after `patience`
     epochs without improvement. `composite` is the chance (0-1) of pasting
     objects from other training photos into a photo (composite.py). `stats`, if given,
+    `negatives` are background-only photos (no boxes); each epoch mixes in a fresh random
+    pick of them, at most `neg_frac` (15%) of that epoch's photos. `stats`, if given,
     is filled with the per-epoch validation mAP ("val_map"), the best epoch and the number of epochs run.
     """
     torch.manual_seed(seed)
@@ -124,8 +134,17 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     lr = 0.005 * batch_size / 8 if lr is None else lr
     model = build_detector(pretrained=pretrained).to(device)
     paste = CompositePaste(crop_pool(train_samples), composite, seed=seed) if composite > 0 else None
-    ds = DetectionDataset(train_samples, transform=train_transform(paste, rot_degrees, rot90_p))
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
+    transform = train_transform(paste, rot_degrees, rot90_p)
+    negatives = list(negatives or [])
+    n_neg = min(len(negatives), round(len(train_samples) * neg_frac / (1 - neg_frac)))
+    rng = random.Random(seed)
+
+    def epoch_loader():
+        extra = rng.sample(negatives, n_neg) if n_neg else []
+        ds = DetectionDataset(list(train_samples) + extra, transform=transform)
+        return DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
+
+    loader = epoch_loader()
     per_epoch = min(len(loader), max_batches) if max_batches else len(loader)
     total = max(1, per_epoch * epochs)
     params = [p for p in model.parameters() if p.requires_grad]
@@ -138,6 +157,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     for epoch in range(epochs):
         model.train()
         loss_sum, n = 0.0, 0
+        if epoch:
+            loader = epoch_loader()
         for i, (images, targets) in enumerate(loader):
             if max_batches is not None and i >= max_batches:
                 break
@@ -339,6 +360,19 @@ def predict_samples(model, samples, min_score=0.05, tta=None):
     return out
 
 
+def false_alarms_per_photo(model, negatives, min_score=0.5):
+    """Average number of objects the detector claims in background-only photos (lower is better).
+
+    None if there are no negative photos."""
+    if not negatives:
+        return None
+    total = 0
+    for s in negatives:
+        with Image.open(s.path) as im:
+            total += len(detect(model, im, min_score=min_score))
+    return total / len(negatives)
+
+
 def _mean(values):
     values = [v for v in values if v is not None]
     return sum(values) / len(values) if values else None
@@ -436,8 +470,11 @@ def compare_runs(results_a, results_b, classes=OBJECT_NAMES, n=1000, seed=0):
     return full_b - full_a, (lo, hi), verdict
 
 
-def format_report(report, ci=None):
-    """`ci` (from `bootstrap_ci`) adds the 95% range next to the overall and per-object scores."""
+def format_report(report, ci=None, false_alarms=None, test_scenes=None):
+    """`ci` (from `bootstrap_ci`) adds the 95% range next to the overall and per-object scores.
+
+    `false_alarms` (from `false_alarms_per_photo`) and `test_scenes` (number of different
+    places in Alex's test footage) are added as extra lines when given."""
     lines = []
     for sec, rows in report.items():
         lines.append(f"\n{sec}")
@@ -447,6 +484,10 @@ def format_report(report, ci=None):
             rng = ci.get(key) if ci and key else None
             extra = f"  (range {100 * rng[0]:.0f}-{100 * rng[1]:.0f}%)" if rng else ""
             lines.append(f"  {name:<28}{score}{extra}   ({n} boxes)")
+    if test_scenes is not None:
+        lines.append(f"\nown footage in the test set comes from {test_scenes} different scene(s)")
+    if false_alarms is not None:
+        lines.append(f"false alarms per background-only photo (score 0.5): {false_alarms:.2f}")
     return "\n".join(lines).lstrip()
 
 
@@ -468,6 +509,8 @@ def main(argv=None):
                    help="largest random tilt in degrees (was 20; small tilts keep boxes tight)")
     t.add_argument("--rot90-p", type=float, default=0.15,
                    help="chance of an exact 90-degree turn")
+    t.add_argument("--neg-frac", type=float, default=0.15,
+                   help="largest share of each epoch that is background-only photos (0 = none)")
     t.add_argument("--max-batches", type=int, default=None)
     t.add_argument("--no-pretrained", action="store_true")
     t.add_argument("--out", default="detector.pt")
@@ -478,20 +521,28 @@ def main(argv=None):
                    help="test-time augmentation: flip = mirror + 1.3x, tiles = also 4 zoomed tiles")
     a = p.parse_args(argv)
     samples, pending = scan_detection(a.root)
-    train, test = split_detection(samples)
+    scenes = scene_groups(samples)
+    train, test = split_detection(samples, scenes=scenes)
+    negs_train, negs_test = split_detection(scan_negatives(a.root))
     if a.cmd == "train":
-        fit, val = split_detection(train, a.val_frac) if a.val_frac > 0 else (train, [])
+        fit, val = (split_detection(train, a.val_frac, scenes=scenes) if a.val_frac > 0
+                    else (train, []))
         stats = {}
         model, hist = train_detector(fit, a.epochs, a.batch_size, a.lr, not a.no_pretrained,
                                      a.max_batches, val_samples=val or None, patience=a.patience,
                                      stats=stats, composite=a.composite,
-                                     rot_degrees=a.rot_degrees, rot90_p=a.rot90_p)
+                                     rot_degrees=a.rot_degrees, rot90_p=a.rot90_p,
+                                     negatives=negs_train if a.neg_frac > 0 else None,
+                                     neg_frac=a.neg_frac)
         save_detector(model, a.out, hist, extra={"train_stats": stats})
         print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
         model, classes = load_detector(a.checkpoint)
         results = predict_samples(model, test, tta=a.tta)
-        print(format_report(build_report(results, classes), bootstrap_ci(results, classes)))
+        alarms = false_alarms_per_photo(model, negs_test)
+        n_scenes = len({scenes[x.group] for x in test if x.source == "own"}) or None
+        print(format_report(build_report(results, classes), bootstrap_ci(results, classes),
+                            alarms, n_scenes))
         if a.tta:
             plain = predict_samples(model, test)
             print(f"\nwithout --tta {a.tta}:")

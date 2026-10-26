@@ -1,5 +1,20 @@
 # Progress log
 
+## 2026-10-26
+**This includes everything from PRs #25, #26, #27, #28 and #29.** Merging this one is enough; the others will close automatically. (`main` is contained in it.)
+
+**Done** (roadmap tasks 23d and 23h)
+- 23d - "nothing here" photos: the downloader now also fetches ~120 Open Images photos that people checked contain no bottle, key, keychain or shoe (`python -m claudeknows.detection_data download --negatives 120`; credited in CREDITS.md). Your own `claudeknows_photos/empty/` folder (optional) is picked up too. Training mixes in a fresh random pick of them each round, at most 15% of the photos (`--neg-frac`, 0 turns it off). These photos are never counted as test "positives". The report now has a line "false alarms per background-only photo (score 0.5)" next to the scores. Fixed along the way: tilting/turning a photo with no boxes crashed the augmentation.
+- 23h - same-room videos stay together: `scene_groups` merges videos with a similar background (average small thumbnail); the train/test split keeps each scene wholly on one side so two videos of one room can't flatter the scores. It prints which videos were merged; if everything looks like one scene it falls back to the by-video split and says so. The report shows how many different scenes the own-footage test set has.
+- 84 tests pass (6 new).
+
+**Next**
+- 23j (zoomed-window training), 23k (averaged weights), 23l (better metres), then Phase 2. All still wait for your first real spatial-notebook run for tuning.
+
+**For Alex to decide**
+- Nothing blocking. The scene-matching sensitivity (0.08) is a guess; if the printout shows videos from different rooms merged (or the same room not merged), tell me.
+- Authorship check: all commits by Claude or Alex (checked below in the PR).
+
 ## 2026-10-21 (evening, with Alex)
 - Alex merged everything up to PR #21; `main` is up to date and all tests pass.
 - **Alex's decision on task 23 (web page): option (a).** Done:
