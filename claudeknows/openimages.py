@@ -114,6 +114,42 @@ def find_candidates(cap, objects=OBJECTS, labels_url=LABELS_URL, boxes_url=BOXES
     return out
 
 
+NEGATIVE_LABELS = ("/m/0118n_9r", "/m/03v3yw", "/m/03lnq3", "/m/06rrc", "/m/09j5n")
+# water bottle, key, keychain, shoe, footwear
+
+
+def find_negatives(cap, labels_url=LABELS_URL, opener=urllib.request.urlopen, log=print):
+    """Image ids that people checked and found to contain NONE of the target objects.
+
+    A photo qualifies when the label file has a "not present" row (`,0.0`) for every
+    label in NEGATIVE_LABELS and no "present" row. Returns up to `cap * OVERSAMPLE` ids.
+    """
+    want = cap * OVERSAMPLE
+    log("scanning the Open Images label file for background-only photos...")
+    out, current, absent, present = [], None, set(), False
+
+    def close():
+        if current and not present and absent >= set(NEGATIVE_LABELS):
+            out.append(current)
+
+    for line in _lines(labels_url, opener):
+        parts = line.rstrip().split(",")
+        if len(parts) != 4 or parts[0] == "ImageID":
+            continue
+        if parts[0] != current:
+            close()
+            if len(out) >= want:
+                return out
+            current, absent, present = parts[0], set(), False
+        if parts[2] in NEGATIVE_LABELS:
+            if parts[3] == "1.0":
+                present = True
+            elif parts[3] == "0.0":
+                absent.add(parts[2])
+    close()
+    return out[:want]
+
+
 def crop_and_shrink(img, box):
     """Crop to the box (+margin) and shrink; returns None if the crop is too small."""
     img = ImageOps.exif_transpose(img).convert("RGB")
