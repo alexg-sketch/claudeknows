@@ -14,17 +14,20 @@ def _folder(root, source, name, files, by, boxes=()):
     dd.save_boxes(d, data)
 
 
-def test_find_negatives_needs_every_label_checked_absent(tmp_path):
+def test_find_negatives_ranks_best_checked_photos_first(tmp_path):
+    L = openimages.NEGATIVE_LABELS  # water bottle, key, keychain, shoe, footwear
     rows = ["ImageID,Source,LabelName,Confidence"]
-    for l in openimages.NEGATIVE_LABELS:
-        rows.append(f"clean,v,{l},0.0")
-    for l in openimages.NEGATIVE_LABELS[:-1]:
-        rows.append(f"partial,v,{l},0.0")  # one label never checked
-    for l in openimages.NEGATIVE_LABELS:
-        rows.append(f"hasshoe,v,{l},{'1.0' if l == '/m/06rrc' else '0.0'}")
+    rows += [f"four,v,{l},0.0" for l in L[:4]]          # 4 labels checked absent
+    rows += [f"two_shoe,v,{l},0.0" for l in (L[0], L[3])]  # 2 absent, incl. shoe
+    rows += [f"two_noshoe,v,{l},0.0" for l in (L[0], L[1])]  # 2 absent, no shoe
+    rows += [f"one,v,{L[1]},0.0"]                        # 1 absent
+    rows += [f"hasshoe,v,{L[0]},0.0", f"hasshoe,v,{L[3]},1.0"]  # a shoe is present
+    rows += ["other,v,/m/0abc,0.0"]                      # unrelated label only
     f = tmp_path / "labels.csv"
     f.write_text("\n".join(rows) + "\n")
-    assert openimages.find_negatives(5, labels_url=f.as_uri(), log=lambda *_: None) == ["clean"]
+    got = openimages.find_negatives(100, labels_url=f.as_uri(), log=lambda *_: None)
+    assert got == ["four", "two_shoe", "two_noshoe", "one"]
+    assert openimages.find_negatives(1, labels_url=f.as_uri(), log=lambda *_: None)[0] == "four"
 
 
 def test_negatives_are_scanned_separately_and_trained_on(tmp_path):

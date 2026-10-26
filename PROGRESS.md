@@ -15,6 +15,13 @@
 - Nothing blocking. The scene-matching sensitivity (0.08) is a guess; if the printout shows videos from different rooms merged (or the same room not merged), tell me.
 - Authorship check: all commits by Claude or Alex (checked below in the PR).
 
+**Fix after review (2026-10-26, Cowork Claude)**
+- The background-only photo finder required all five target labels to be checked absent on
+  one photo. No Open Images photo has that (at most four), so it found **0** photos. It now
+  takes photos with no target present and at least one checked absent, best-checked first
+  (most labels checked, then shoe/footwear checked). Real run: 110,725 candidates, 12 of 12
+  sampled photos downloaded and looked object-free.
+
 ## 2026-10-21 (evening, with Alex)
 - Alex merged everything up to PR #21; `main` is up to date and all tests pass.
 - **Alex's decision on task 23 (web page): option (a).** Done:

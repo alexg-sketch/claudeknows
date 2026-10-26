@@ -119,35 +119,31 @@ NEGATIVE_LABELS = ("/m/0118n_9r", "/m/03v3yw", "/m/03lnq3", "/m/06rrc", "/m/09j5
 
 
 def find_negatives(cap, labels_url=LABELS_URL, opener=urllib.request.urlopen, log=print):
-    """Image ids that people checked and found to contain NONE of the target objects.
+    """Image ids that people checked and found to contain none of the target objects.
 
-    A photo qualifies when the label file has a "not present" row (`,0.0`) for every
-    label in NEGATIVE_LABELS and no "present" row. Returns up to `cap * OVERSAMPLE` ids.
+    A photo qualifies when the label file has at least one "not present" row (`,0.0`)
+    for a label in NEGATIVE_LABELS and no "present" row for any of them. No photo in
+    Open Images has all five labels checked (at most four), so instead the best-checked
+    photos come first: most labels checked absent, then those with shoe/footwear checked
+    absent (shoes are the target most likely to be in a scene unlabelled), then by id.
+    Returns up to `cap * OVERSAMPLE` ids. Reads the whole label file (about 2 minutes).
     """
     want = cap * OVERSAMPLE
     log("scanning the Open Images label file for background-only photos...")
-    out, current, absent, present = [], None, set(), False
-
-    def close():
-        if current and not present and absent >= set(NEGATIVE_LABELS):
-            out.append(current)
-
+    absent, present = {}, set()
     for line in _lines(labels_url, opener):
         parts = line.rstrip().split(",")
-        if len(parts) != 4 or parts[0] == "ImageID":
+        if len(parts) != 4 or parts[2] not in NEGATIVE_LABELS:
             continue
-        if parts[0] != current:
-            close()
-            if len(out) >= want:
-                return out
-            current, absent, present = parts[0], set(), False
-        if parts[2] in NEGATIVE_LABELS:
-            if parts[3] == "1.0":
-                present = True
-            elif parts[3] == "0.0":
-                absent.add(parts[2])
-    close()
-    return out[:want]
+        if parts[3] == "1.0":
+            present.add(parts[0])
+        elif parts[3] == "0.0":
+            absent.setdefault(parts[0], set()).add(parts[2])
+    shoe_labels = {"/m/06rrc", "/m/09j5n"}  # shoe, footwear
+    ranked = sorted((i for i in absent if i not in present),
+                    key=lambda i: (-len(absent[i]), not (absent[i] & shoe_labels), i))
+    log(f"{len(ranked)} candidate photos; using the best-checked {min(want, len(ranked))}")
+    return ranked[:want]
 
 
 def crop_and_shrink(img, box):
