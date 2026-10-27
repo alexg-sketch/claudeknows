@@ -3,6 +3,52 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-27
+
+**Summary.** Started from PR #30 (newest open branch; it includes #25 to #29, so merging it is enough). Searched for noisy auto-box handling,
+threshold choice for detectors, and phone-camera depth calibration. No new detector, depth or labeller change is worth making. One small
+gap turned up in the code itself: every object shares one cut-off, both when OWLv2 draws the training boxes (0.3, and 0.4 for the "fill in"
+step) and when the trained detector decides what to show (0.5). A 2026 study of open-vocabulary detectors found the best cut-off differed a
+lot between models (0.10 to 0.41), because these scores are not comparable between objects. Keys are the hardest, least-seen object, so they
+probably score lower than bottles and get dropped by a cut-off tuned for bottles.
+
+### Recommendations
+
+**1. Per-object score cut-offs (new task 23m; small effort, low risk).**
+- What: pick one cut-off per object (water_bottle, keys, shoes) instead of a shared number, in two places. (a) OWLv2 auto-boxing / fill-in:
+  keys get a lower cut-off than the others if the contact sheet shows keys boxes are being lost. (b) The trained detector: the score above
+  which a box is shown, chosen from the validation photos by sweeping 0.05 ... 0.95 and taking the value with the best F1 (balance of missed
+  vs. false boxes) for each object. Roboflow's guidance says the same: choose the operating point from the precision-recall curve per class and
+  confirm on a held-out set; mAP alone does not tell you the cut-off.
+- How: `autobox.py`: `THRESHOLD` and `FILL_THRESHOLD` become dicts keyed by prompt label (default value = today's number for every object, so
+  behaviour is unchanged until changed); CLI `--threshold` still sets all. `detector.py`: `best_thresholds(model, val_samples)` returns
+  `{class: score}` by F1 sweep (greedy IoU 0.5 matching, same as `mean_ap`); skip an object with fewer than 20 validation boxes (keep 0.5);
+  save the dict in the checkpoint as `thresholds`; `detect`/`detect_tta` use `min_score=None` meaning "use the saved per-object cut-off, else 0.5".
+  The report prints precision, recall and chosen cut-off per object, with the 23f range.
+- Acceptance: CPU test with a fake model: an object whose true boxes score about 0.3 gets a cut-off near 0.3 and one whose false boxes score 0.6
+  gets above 0.6; old checkpoints without `thresholds` still load and behave as before; fewer than 20 val boxes keeps 0.5. The cut-offs are fitted on
+  validation photos only; test and the Phase 2 gold set (task 25) are never used to pick them.
+- Expected gain: modest and mostly for keys (more of them found, shown, or labelled); no change to mAP, which ignores the cut-off. Effort: about 50 lines.
+  Risk: with few validation boxes the choice is noisy, hence the 20-box minimum and the 0.5 fallback. Licence: none (own code).
+
+### Considered but not recommended
+- **Per-object co-teaching for VLM pseudo-labels (arXiv 2511.09955, Nov 2025):** two detectors train together and each drops boxes its partner finds high-loss; +15 mAP over plain pseudo-labels on KITTI. It is built on YOLO (AGPL) and needs two models with per-box losses, which torchvision's Faster R-CNN does not expose. Too much work for our few hundred auto-boxes; the agreement and consistency rules in tasks 23c / 26 are the cheap version.
+- **Box-tightness / localisation-quality filtering of OWLv2 boxes:** found no 2025-26 paper specific to it; OWLv2's own authors argue for weak filtering. Revisit if the contact sheets show loose boxes.
+- **Noisy tiny-object methods (DN-TOD arXiv 2401.08056, Point Teacher arXiv 2412.05837):** aimed at aerial images, with code not released or not confirmed.
+- **Phone-specific depth fine-tuning:** found no 2026 source; the leave-one-out scale fix and the blend in 23l already cover calibration. Apple's Core ML build of Depth Anything V2 Small matters only for on-phone use later (phase 3).
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Open-vocabulary detectors have uncalibrated scores, best cut-off differs by model (Apr 2026): https://arxiv.org/pdf/2604.09920
+- How to set a confidence threshold for object detection (Roboflow): https://blog.roboflow.com/how-to-set-a-confidence-threshold-for-object-detection/
+- Per-object co-teaching with VLM pseudo-labels: https://arxiv.org/abs/2511.09955
+- Scaling open-vocabulary detection (OWLv2, weak filtering of pseudo-labels): https://arxiv.org/abs/2306.09683
+- DN-TOD, tiny objects under label noise: https://www.arxiv.org/abs/2401.08056
+- Point Teacher: https://arxiv.org/abs/2412.05837
+- Depth Anything V2 repo (metric Small models): https://github.com/DepthAnything/Depth-Anything-V2
+
 ## 2026-10-25
 
 **Summary.** Started from PR #28 (newest open branch; it includes #25, #26 and #27). Searched for class-imbalance fixes in detection,
