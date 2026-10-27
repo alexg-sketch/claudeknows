@@ -1,5 +1,27 @@
 # Progress log
 
+## 2026-10-26
+**This includes everything from PRs #25, #26, #27, #28 and #29.** Merging this one is enough; the others will close automatically. (`main` is contained in it.)
+
+**Done** (roadmap tasks 23d and 23h)
+- 23d - "nothing here" photos: the downloader now also fetches ~120 Open Images photos that people checked contain no bottle, key, keychain or shoe (`python -m claudeknows.detection_data download --negatives 120`; credited in CREDITS.md). Your own `claudeknows_photos/empty/` folder (optional) is picked up too. Training mixes in a fresh random pick of them each round, at most 15% of the photos (`--neg-frac`, 0 turns it off). These photos are never counted as test "positives". The report now has a line "false alarms per background-only photo (score 0.5)" next to the scores. Fixed along the way: tilting/turning a photo with no boxes crashed the augmentation.
+- 23h - same-room videos stay together: `scene_groups` merges videos with a similar background (average small thumbnail); the train/test split keeps each scene wholly on one side so two videos of one room can't flatter the scores. It prints which videos were merged; if everything looks like one scene it falls back to the by-video split and says so. The report shows how many different scenes the own-footage test set has.
+- 84 tests pass (6 new).
+
+**Next**
+- 23j (zoomed-window training), 23k (averaged weights), 23l (better metres), then Phase 2. All still wait for your first real spatial-notebook run for tuning.
+
+**For Alex to decide**
+- Nothing blocking. The scene-matching sensitivity (0.08) is a guess; if the printout shows videos from different rooms merged (or the same room not merged), tell me.
+- Authorship check: all commits by Claude or Alex (checked below in the PR).
+
+**Fix after review (2026-10-26, Cowork Claude)**
+- The background-only photo finder required all five target labels to be checked absent on
+  one photo. No Open Images photo has that (at most four), so it found **0** photos. It now
+  takes photos with no target present and at least one checked absent, best-checked first
+  (most labels checked, then shoe/footwear checked). Real run: 110,725 candidates, 12 of 12
+  sampled photos downloaded and looked object-free.
+
 ## 2026-10-21 (evening, with Alex)
 - Alex merged everything up to PR #21; `main` is up to date and all tests pass.
 - **Alex's decision on task 23 (web page): option (a).** Done:
@@ -422,3 +444,31 @@ and the Colab notebook.
   horse, ship, truck). If you have a real use case in mind (e.g. "animal ->
   alert, vehicle -> log"), add it under "Notes from Alex" in `ROADMAP.md`.
   Otherwise I'll use a simple placeholder mapping.
+
+## 2026-10-23
+**Done** (tasks 23c and 23g; this PR also carries PR #25 and PR #26 - merging this one is enough)
+- Task 23c - `python -m claudeknows.autobox fill data/detection`: for photos that already have boxes
+  (including Open Images ones), look for the OTHER objects with OWLv2 and add a box (marked
+  `owlv2-extra`) only if that object has no box yet, is >= 0.4 confident and does not overlap an
+  existing box. Existing boxes are never changed; each photo is checked once. Reason: a bottle photo
+  with shoes in the background used to teach the detector that those shoes are "nothing". The
+  spatial Colab notebook now runs it right after auto-boxing; contact sheets show the added boxes.
+- Task 23g - `detect_tta` in `detector.py` and `python -m claudeknows.detector report --tta flip|tiles`.
+  `flip` = photo + mirrored + 1.3x bigger; `tiles` also runs four zoomed-in tiles to catch far-away
+  (small) objects. Results are merged with `ensemble-boxes` (added to requirements.txt). The report
+  prints the scores with and without it, with the usual confidence ranges. Off by default.
+- 5 new tests (fill rules, tiles find a small object at the right place, mirror is exact); 80 pass.
+
+**Next**
+- 23d (background-only photos), 23h (scene-aware split), 23j (zoomed-window training).
+
+**Notes**
+- Tiles use "max" instead of "average" scores in the merge: otherwise an object seen by one tile
+  only would be averaged down below the 0.5 cut-off.
+- Whether to KEEP TTA/tiles needs a real trained detector: run the report with and without and
+  look at the far-bin numbers.
+
+**For Alex to decide**
+- Nothing blocking. When you next run the spatial notebook, it will also run the new "fill" step.
+  Authorship check: every commit on main and on this branch is by Claude or Alex (GitHub web-merges
+  by "GitHub"), so running the notebook is fine.
