@@ -1,5 +1,20 @@
 # Progress log
 
+## 2026-10-28
+**This includes everything from PRs #25, #26, #27, #28, #29, #30 and #31.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
+
+**Done** (roadmap tasks 23j and 23k)
+- 23j - zoomed-window training: new option `--zoom-crop-p` (default 0 = off). With that chance, a training photo is cut down to a window 50-70% of its size that fully contains at least one object, then scaled back up, so objects look in training like they do inside a zoomed tile at test time (`--tta tiles`). Boxes that stay at least 60% inside are kept and clipped. Test: a box inside the window keeps exact shifted coordinates.
+- 23k - averaged weights: new option `--ema-decay` (default 0 = off; try 0.995). The training keeps a smoothed average of the weights; that average is what gets scored each round, kept as "best" and saved. Test: decay 0 changes nothing, with 0.9 the weights differ from the plain ones.
+- 88 tests pass (4 new). Both are off by default. The "does it help" comparison (`--zoom-crop-p` 0 / 0.25, `--ema-decay` 0 / 0.995, judged with `compare_runs`) needs real training in Colab, so it waits for your first real run.
+
+**Next**
+- 23l (better metres) and 23m (per-object score cut-offs), then Phase 2.
+
+**For Alex to decide**
+- Nothing blocking.
+- Authorship check: all commits on main and on this branch are by Claude or Alex.
+
 ## 2026-10-26
 **This includes everything from PRs #25, #26, #27, #28 and #29.** Merging this one is enough; the others will close automatically. (`main` is contained in it.)
 

@@ -55,7 +55,36 @@ def build_detector(num_objects=len(OBJECT_NAMES), pretrained=True, min_size=IMAG
 
 # ----------------------------------------------------- box-aware augmentation
 
-def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1):
+def zoom_crop(img, target, rng, tries=10, keep=0.6):
+    """Crop a random window (50-70% of each side, same aspect ratio) that fully holds one box.
+
+    Boxes that stay at least `keep` (60%) inside are kept and clipped, shifted to the
+    window's corner. Returns the photo and target unchanged if no window fits in `tries` draws.
+    """
+    h, w = img.shape[-2:]
+    boxes = target["boxes"]
+    if len(boxes) == 0:
+        return img, target
+    for _ in range(tries):
+        f = rng.uniform(0.5, 0.7)
+        cw, ch = max(1, int(w * f)), max(1, int(h * f))
+        x0, y0 = rng.randint(0, w - cw), rng.randint(0, h - ch)
+        win = torch.tensor([x0, y0, x0 + cw, y0 + ch], dtype=boxes.dtype)
+        inter = (torch.minimum(boxes[:, 2:], win[2:]) - torch.maximum(boxes[:, :2], win[:2])).clamp(min=0)
+        area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+        frac = inter[:, 0] * inter[:, 1] / area.clamp(min=1e-6)
+        if not bool((frac >= 0.999).any()):
+            continue
+        kept = frac >= keep
+        shift = torch.tensor([x0, y0, x0, y0], dtype=boxes.dtype)
+        nb = (boxes[kept] - shift)
+        nb[:, 0::2] = nb[:, 0::2].clamp(0, cw)
+        nb[:, 1::2] = nb[:, 1::2].clamp(0, ch)
+        return img[..., y0:y0 + ch, x0:x0 + cw], {**target, "boxes": nb, "labels": target["labels"][kept]}
+    return img, target
+
+
+def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1, zoom_p=0.0, seed=0):
     """Random flip, small rotation, exact 90-degree turns, zoom in/out, shift, perspective, colour.
 
     Small tilts only (`rot_degrees`, default 8): boxes get looser as the tilt grows, which
@@ -66,7 +95,10 @@ def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1):
     Boxes follow the image. A rotated box becomes the box around the rotated
     corners (a little loose, never cut). Boxes mostly pushed out of the frame
     are dropped. `composite` (a `CompositePaste`) runs first and adds pasted objects.
+    With chance `zoom_p` (default 0 = off) a zoomed window around at least one box is cut out
+    first (`zoom_crop`), so objects look like they do inside a test-time tile.
     """
+    zoom_rng = random.Random(seed)
     t = v2.Compose([
         v2.RandomHorizontalFlip(),
         v2.RandomVerticalFlip(p=vflip_p),
@@ -82,6 +114,8 @@ def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1):
     def apply(img, target):
         if composite is not None:
             img, target = composite(img, target)
+        if zoom_p > 0 and zoom_rng.random() < zoom_p:
+            img, target = zoom_crop(img, target, zoom_rng)
         h, w = img.shape[-2:]
         empty = len(target["boxes"]) == 0
         # background-only photo: torchvision skips empty box lists when a turn changes the
@@ -116,7 +150,8 @@ def lr_factor(it, total, warmup):
 def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=True,
                    max_batches=None, device=None, log=print, seed=0, val_samples=None,
                    patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
-                   rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15):
+                   rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15,
+                   zoom_crop_p=0.0, ema_decay=0.0):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -125,6 +160,9 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     after every epoch, keeps the best epoch's weights and stops after `patience`
     epochs without improvement. `composite` is the chance (0-1) of pasting
     objects from other training photos into a photo (composite.py). `stats`, if given,
+    `zoom_crop_p` is the chance of training on a zoomed window around a box (0 = off).
+    `ema_decay` > 0 (e.g. 0.995) keeps a moving average of the weights, which is what gets
+    validated, kept and saved (0 = off).
     `negatives` are background-only photos (no boxes); each epoch mixes in a fresh random
     pick of them, at most `neg_frac` (15%) of that epoch's photos. `stats`, if given,
     is filled with the per-epoch validation mAP ("val_map"), the best epoch and the number of epochs run.
@@ -134,7 +172,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     lr = 0.005 * batch_size / 8 if lr is None else lr
     model = build_detector(pretrained=pretrained).to(device)
     paste = CompositePaste(crop_pool(train_samples), composite, seed=seed) if composite > 0 else None
-    transform = train_transform(paste, rot_degrees, rot90_p)
+    transform = train_transform(paste, rot_degrees, rot90_p, zoom_p=zoom_crop_p, seed=seed)
     negatives = list(negatives or [])
     n_neg = min(len(negatives), round(len(train_samples) * neg_frac / (1 - neg_frac)))
     rng = random.Random(seed)
@@ -152,6 +190,11 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda it: lr_factor(it, total, warmup))
     amp = device == "cuda" or str(device).startswith("cuda")
     scaler = torch.amp.GradScaler(enabled=amp)
+    ema = None
+    if ema_decay > 0:
+        from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+        ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(ema_decay), use_buffers=True)
+    step = 0
     history, val_history = [], []
     best, best_epoch, best_state = -1.0, 0, None
     for epoch in range(epochs):
@@ -173,18 +216,25 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
             scaler.step(opt)
             scaler.update()
             sched.step()
+            step += 1
+            if ema is not None:
+                if step <= warmup:  # copy the raw weights until warm-up ends, then average
+                    ema.module.load_state_dict(model.state_dict())
+                else:
+                    ema.update_parameters(model)
             loss_sum += float(loss.detach())
             n += 1
         history.append(loss_sum / max(n, 1))
         msg = f"epoch {epoch + 1}/{epochs}: loss {history[-1]:.3f}"
         if val_samples:
-            v = mean_ap(model, val_samples)
+            v = mean_ap(ema.module if ema is not None else model, val_samples)
             v = 0.0 if v is None else v
             val_history.append(v)
             msg += f", validation mAP {100 * v:.1f}%"
             if v > best:
                 best, best_epoch = v, epoch + 1
-                best_state = {k: t.detach().clone() for k, t in model.state_dict().items()}
+                best_state = {k: t.detach().clone()
+                              for k, t in (ema.module if ema is not None else model).state_dict().items()}
             log(msg)
             if epoch + 1 - best_epoch >= patience:
                 log(f"no improvement for {patience} epochs: stopping, keeping epoch {best_epoch}")
@@ -193,6 +243,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
             log(msg)
     if best_state is not None:
         model.load_state_dict(best_state)
+    elif ema is not None:
+        model.load_state_dict(ema.module.state_dict())
     if stats is not None:
         stats.update(val_map=val_history, best_epoch=best_epoch or len(history),
                      epochs_run=len(history))
@@ -511,6 +563,10 @@ def main(argv=None):
                    help="chance of an exact 90-degree turn")
     t.add_argument("--neg-frac", type=float, default=0.15,
                    help="largest share of each epoch that is background-only photos (0 = none)")
+    t.add_argument("--zoom-crop-p", type=float, default=0.0,
+                   help="chance of training on a zoomed window around a box (pairs with --tta tiles)")
+    t.add_argument("--ema-decay", type=float, default=0.0,
+                   help="moving average of the weights, e.g. 0.995 (0 = off)")
     t.add_argument("--max-batches", type=int, default=None)
     t.add_argument("--no-pretrained", action="store_true")
     t.add_argument("--out", default="detector.pt")
@@ -533,7 +589,8 @@ def main(argv=None):
                                      stats=stats, composite=a.composite,
                                      rot_degrees=a.rot_degrees, rot90_p=a.rot90_p,
                                      negatives=negs_train if a.neg_frac > 0 else None,
-                                     neg_frac=a.neg_frac)
+                                     neg_frac=a.neg_frac, zoom_crop_p=a.zoom_crop_p,
+                                     ema_decay=a.ema_decay)
         save_detector(model, a.out, hist, extra={"train_stats": stats})
         print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
