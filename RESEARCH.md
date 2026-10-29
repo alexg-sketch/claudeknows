@@ -3,6 +3,65 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-29
+
+**Summary.** Started from PR #32 (newest open branch; it includes #25 to #31, so merging it is enough). Searched for video-box propagation
+(SAM 2), small-data Faster R-CNN fine-tuning results and free-Colab limits. No new detector, labeller or depth change is worth making.
+Reading the training code against Colab's limits turned up two practical gaps instead. (1) Training cannot pick up where it stopped: if the free
+Colab session drops (idle timeout, 12-hour cap, quota), the whole run is lost, and the roadmap now plans many 15-epoch ablation runs
+(EMA, zoom windows, rotation, composites). (2) The detector's data loader runs in one process (no `num_workers`), so the GPU waits while the
+CPU decodes JPEGs and applies rotations, pastes and zooms. Both are plumbing, not new science, and cost few lines.
+
+### Recommendations
+
+**1. Resumable training (new task 23n; small effort, low risk).**
+- What: save the full training state to a file after every epoch and, if that file exists, continue from it. Free Colab gives a T4, roughly a
+  12-hour hard cap and an idle timeout (third-party figures; Google does not guarantee free GPUs), so a dropped session is normal, and every
+  ablation planned in 23e / 23j / 23k / 23b is a fresh 15-epoch run.
+- How: `train_detector(..., resume_path=None)` (flag `--resume PATH`, default none = today's behaviour). After each epoch `torch.save` (to a temp file, then
+  `os.replace`, so a cut-off write cannot corrupt it) a dict with: model state, optimiser, scheduler, GradScaler, EMA state (if on), `epoch`, `step`,
+  `history`, `val_history`, `best`, `best_epoch`, `best_state`, the Python `random.Random` state used for negatives, and the settings that must match
+  (epochs, batch size, lr, zoom/rot/composite/ema values). If the file exists and the settings match, load all of it and start the loop at `epoch+1`; if
+  they differ, say so and start fresh. Delete or ignore the file when training ends normally. The notebook passes `--resume
+  /content/drive/MyDrive/claudeknows_models/resume_<run-name>.pt` when Drive is on, so "Run all" after a disconnect simply continues.
+- Acceptance: CPU test with `weights=None`: train 4 epochs in one go versus 2 epochs, stop, resume for 2 more; the final weights match to 1e-5
+  (use `max_batches`, fixed seed, workers 0); a resume file with different settings is ignored with a message; no `resume_path` changes nothing. The data
+  shuffle after resume may differ from an unbroken run in the epoch it restarts; say so in the docstring rather than chase exact equality.
+- Expected gain: no change to accuracy; saves up to a whole run of Colab quota after each disconnect. Effort: about 40 lines. Risk: low; resume files
+  are large (model + optimiser + best copy, a few hundred MB), so keep one per run and overwrite it. Licence: none (PyTorch BSD-3).
+
+**2. Load photos in parallel (new task 23o; tiny effort, low risk).**
+- What: `train_detector`'s `epoch_loader` builds `DataLoader(ds, batch_size, shuffle=True, collate_fn=collate)` with the default `num_workers=0`, so JPEG
+  decoding, affine rotation, composite pasting and zoom windows all happen in the training process between GPU steps. Colab VMs usually have 2
+  CPU cores (this sandbox shows 4), so 2 worker processes is the standard fix. The classifier loaders in `data.py` and `evaluate.py` already use 2.
+- How: add `num_workers=2` (flag `--workers`, default 2; 0 for tests) to `train_detector`, `predict_samples` / `mean_ap` loaders if they use a loader, plus
+  `pin_memory=True` when CUDA and `persistent_workers=False` (the loader is rebuilt every epoch because negatives are re-sampled, so persistent workers
+  would not help). Seed each worker: pass a `worker_init_fn` (and `generator`) that derives from `seed + worker_id`, because `CompositePaste` and the
+  random zoom/rotation use their own RNGs and workers would otherwise repeat the same "random" draws every epoch. If the transform holds one `random.Random`,
+  copy-on-fork gives every worker the same stream: reseed it in `worker_init_fn`.
+- Acceptance: CPU test with `weights=None` and `num_workers=2`: two workers do not return identical augmentation draws for identical inputs; the loop still
+  finishes; `--workers 0` reproduces today's results with the same seed. Time one epoch with 0 vs 2 workers on Colab and print it in the notebook so the gain is visible.
+- Expected gain: shorter epochs, most of all with composite and zoom turned on; no change to accuracy. Effort: about 10 lines. Risk: the RNG-per-worker
+  point above is the one thing that can quietly make augmentation less random. Licence: none.
+
+### Considered but not recommended
+- **SAM 2 box propagation to label video frames (Apache-2.0 code, tools such as SAM2YOLO and Roboflow's video tracker):** a real way to label one frame and
+  follow the object through the clip, but it needs a hand-drawn seed box per clip and a large model next to the detector; OWLv2 plus the consistency rule
+  in task 26 already covers this more cheaply. Found no 2026 study of its quality on small objects. Revisit if OWLv2 boxes on Alex's footage look poor on the contact sheets.
+- **More backbone-unfreezing / resolution experiments for torchvision MobileNetV3 Faster R-CNN:** the search returned only API docs and no results for
+  this size; nothing to act on.
+- **Mixed precision / batch-size tweaks:** already done in 23a; a T4 gains nothing from bf16.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- SAM 2 for video annotation (tool overview): https://www.labellerr.com/blog/sam-2-video-annotation/
+- SAM2YOLO, labels from video with SAM 2: https://app.readytensor.ai/publications/a-software-tool-to-generate-labeled-image-data-from-input-videos-using-sam2-HtrHlVmlQ7La
+- Free Colab limits (third-party summary, unverified against Google): https://www.hivenet.com/post/google-colaboratory-gpu-complete-guide-to-free-cloud-gpu-access-and-limitations
+- torchvision Faster R-CNN MobileNetV3 docs: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn.html
+- PyTorch data loading (`num_workers`, `worker_init_fn`): https://pytorch.org/docs/stable/data.html (could not be fetched from the sandbox today; standard documented behaviour)
+
 ## 2026-10-27
 
 **Summary.** Started from PR #30 (newest open branch; it includes #25 to #29, so merging it is enough). Searched for noisy auto-box handling,
