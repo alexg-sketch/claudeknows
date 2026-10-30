@@ -236,7 +236,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                     n_neg=len(negatives), warmup=warmup)
     start = 0
     if resume_path and os.path.exists(resume_path):
-        ck = torch.load(resume_path, map_location=device, weights_only=False)
+        ck = torch.load(resume_path, map_location=device, weights_only=True)
         if ck["settings"] != settings:
             log(f"resume file {resume_path} was made with different settings: starting fresh")
         else:
