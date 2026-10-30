@@ -1,5 +1,20 @@
 # Progress log
 
+## 2026-10-30
+**This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32 and #33.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
+
+**Done** (roadmap tasks 23n and 23o)
+- 23n - training that survives a Colab disconnect: after every round the whole training state is saved to a file (written safely, then renamed). If you press "Run all" again after a disconnect, training continues from the last finished round instead of starting over. If the settings changed, it says so and starts fresh; the file is deleted when training finishes. The spatial notebook now keeps this file in Drive `claudeknows_models/resume_detector.pt`. Option: `--resume PATH`. Test: 2 rounds + resume + 2 rounds gives the same weights as 4 straight.
+- 23o - faster photo loading: `--workers` (default 2) loads photos in extra processes so the GPU waits less. Each worker gets its own random draws (otherwise the random zooms/pastes would repeat). The notebook prints how long training took, so you can compare with `--workers 0`. Test covers both.
+- 92 tests pass (4 new).
+
+**Next**
+- 23l (better metres from two guesses), 23m (per-object score cut-offs), then Phase 2.
+
+**For Alex to decide**
+- Nothing blocking.
+- Authorship check: all commits on main and on this branch are by Claude or Alex (GitHub web-merge committer only for Alex's merges).
+
 ## 2026-10-28
 **This includes everything from PRs #25, #26, #27, #28, #29, #30 and #31.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
 

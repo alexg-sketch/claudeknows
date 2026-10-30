@@ -11,6 +11,7 @@ tests use `pretrained=False`).
 """
 import argparse
 import math
+import os
 import random
 from collections import defaultdict
 
@@ -128,7 +129,31 @@ def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1, zo
             out = {"boxes": out["boxes"][:0], "labels": out["labels"][:0]}
         return img.as_subclass(torch.Tensor), {"boxes": out["boxes"].as_subclass(torch.Tensor),
                                                "labels": out["labels"]}
+
+    def reseed(value):
+        """Restart the transform's own random generators (data-loader workers call this)."""
+        zoom_rng.seed(value)
+        if composite is not None and hasattr(composite, "rng"):
+            composite.rng.seed(value + 1)
+
+    def get_state():
+        return (zoom_rng.getstate(), composite.rng.getstate() if hasattr(composite, "rng") else None)
+
+    def set_state(state):
+        zoom_rng.setstate(state[0])
+        if state[1] is not None:
+            composite.rng.setstate(state[1])
+    apply.reseed, apply.get_state, apply.set_state = reseed, get_state, set_state
     return apply
+
+
+def _seed_worker(worker_id):
+    """DataLoader workers inherit copies of the transform's Python random generators, so
+    without this every worker (and every epoch) would repeat the same "random" draws."""
+    info = torch.utils.data.get_worker_info()
+    transform = getattr(info.dataset, "transform", None)
+    if transform is not None and hasattr(transform, "reseed"):
+        transform.reseed(torch.initial_seed() % 2 ** 31)  # differs per worker and per epoch
 
 
 # ---------------------------------------------------------------- training
@@ -151,7 +176,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                    max_batches=None, device=None, log=print, seed=0, val_samples=None,
                    patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
                    rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15,
-                   zoom_crop_p=0.0, ema_decay=0.0):
+                   zoom_crop_p=0.0, ema_decay=0.0, resume_path=None, workers=0):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -166,6 +191,11 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     `negatives` are background-only photos (no boxes); each epoch mixes in a fresh random
     pick of them, at most `neg_frac` (15%) of that epoch's photos. `stats`, if given,
     is filled with the per-epoch validation mAP ("val_map"), the best epoch and the number of epochs run.
+    `resume_path`: after every epoch the whole training state is saved there (temp file, then
+    rename); if the file exists and was made with the same settings, training continues from
+    the next epoch (random draws are restored too, but with `workers` > 0 the photo order may
+    differ from an unbroken run). The file is removed when training ends normally.
+    `workers` loads photos in that many extra processes (0 = in the training process).
     """
     torch.manual_seed(seed)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -176,11 +206,14 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     negatives = list(negatives or [])
     n_neg = min(len(negatives), round(len(train_samples) * neg_frac / (1 - neg_frac)))
     rng = random.Random(seed)
+    pin = str(device).startswith("cuda") and workers > 0
 
     def epoch_loader():
         extra = rng.sample(negatives, n_neg) if n_neg else []
         ds = DetectionDataset(list(train_samples) + extra, transform=transform)
-        return DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
+        return DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate,
+                          num_workers=workers, worker_init_fn=_seed_worker if workers else None,
+                          pin_memory=pin)
 
     loader = epoch_loader()
     per_epoch = min(len(loader), max_batches) if max_batches else len(loader)
@@ -197,7 +230,31 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     step = 0
     history, val_history = [], []
     best, best_epoch, best_state = -1.0, 0, None
-    for epoch in range(epochs):
+    settings = dict(epochs=epochs, batch_size=batch_size, lr=lr, seed=seed, composite=composite,
+                    rot_degrees=rot_degrees, rot90_p=rot90_p, neg_frac=neg_frac, zoom=zoom_crop_p,
+                    ema=ema_decay, max_batches=max_batches, n_train=len(train_samples),
+                    n_neg=len(negatives), warmup=warmup)
+    start = 0
+    if resume_path and os.path.exists(resume_path):
+        ck = torch.load(resume_path, map_location=device, weights_only=False)
+        if ck["settings"] != settings:
+            log(f"resume file {resume_path} was made with different settings: starting fresh")
+        else:
+            model.load_state_dict(ck["model"])
+            opt.load_state_dict(ck["opt"])
+            sched.load_state_dict(ck["sched"])
+            scaler.load_state_dict(ck["scaler"])
+            if ema is not None:
+                ema.load_state_dict(ck["ema"])
+            start, step = ck["epoch"], ck["step"]
+            history, val_history = ck["history"], ck["val_history"]
+            best, best_epoch, best_state = ck["best"], ck["best_epoch"], ck["best_state"]
+            rng.setstate(ck["rng"])
+            transform.set_state(ck["transform_rng"])
+            torch.set_rng_state(ck["torch_rng"].cpu())
+            log(f"resuming from {resume_path}: {start} of {epochs} epochs already done")
+    stopped = False
+    for epoch in range(start, epochs):
         model.train()
         loss_sum, n = 0.0, 0
         if epoch:
@@ -238,9 +295,23 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
             log(msg)
             if epoch + 1 - best_epoch >= patience:
                 log(f"no improvement for {patience} epochs: stopping, keeping epoch {best_epoch}")
-                break
+                stopped = True
         else:
             log(msg)
+        if resume_path and not stopped:
+            tmp = resume_path + ".tmp"
+            torch.save(dict(settings=settings, model=model.state_dict(), opt=opt.state_dict(),
+                            sched=sched.state_dict(), scaler=scaler.state_dict(),
+                            ema=ema.state_dict() if ema is not None else None,
+                            epoch=epoch + 1, step=step, history=history, val_history=val_history,
+                            best=best, best_epoch=best_epoch, best_state=best_state,
+                            rng=rng.getstate(), transform_rng=transform.get_state(),
+                            torch_rng=torch.get_rng_state()), tmp)
+            os.replace(tmp, resume_path)
+        if stopped:
+            break
+    if resume_path and os.path.exists(resume_path):
+        os.remove(resume_path)
     if best_state is not None:
         model.load_state_dict(best_state)
     elif ema is not None:
@@ -567,6 +638,10 @@ def main(argv=None):
                    help="chance of training on a zoomed window around a box (pairs with --tta tiles)")
     t.add_argument("--ema-decay", type=float, default=0.0,
                    help="moving average of the weights, e.g. 0.995 (0 = off)")
+    t.add_argument("--resume", default=None, metavar="PATH",
+                   help="save progress here after every epoch and continue from it if it exists")
+    t.add_argument("--workers", type=int, default=2,
+                   help="extra processes that load photos (0 = none)")
     t.add_argument("--max-batches", type=int, default=None)
     t.add_argument("--no-pretrained", action="store_true")
     t.add_argument("--out", default="detector.pt")
@@ -590,7 +665,8 @@ def main(argv=None):
                                      rot_degrees=a.rot_degrees, rot90_p=a.rot90_p,
                                      negatives=negs_train if a.neg_frac > 0 else None,
                                      neg_frac=a.neg_frac, zoom_crop_p=a.zoom_crop_p,
-                                     ema_decay=a.ema_decay)
+                                     ema_decay=a.ema_decay, resume_path=a.resume,
+                                     workers=a.workers)
         save_detector(model, a.out, hist, extra={"train_stats": stats})
         print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
