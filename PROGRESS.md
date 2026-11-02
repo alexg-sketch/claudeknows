@@ -6,14 +6,14 @@
 **Done** (roadmap tasks 23l and 23m)
 - 23l - better metres from two guesses: the distance shown is now a blend of the depth model and the object-size estimate in "log space" (default 50/50 = geometric mean, so 1 m and 4 m give 2 m; the constant is `BLEND_W`). The distance check on your tape-measured photos also scores that mix and fits the best blend weight leave-one-out, and tells you plainly when there are fewer than 10 photos (too noisy, keep 0.5). New: when one photo shows 2+ bottles/shoes, the depth model's scale is corrected from them and applied to everything in that photo, so keys get a better number too (flagged `calibrated_by_photo`). Near/far order is untouched.
 - 23m - separate score cut-offs per object: OWLv2 auto-boxing now has a cut-off per object (all still at today's 0.3 / 0.4, so nothing changes until we lower keys). After training, the detector picks a cut-off per object on the validation photos (best balance of missed vs. false boxes; objects with fewer than 20 validation boxes keep 0.5), saves it in the model file, and `detect` uses it automatically. The report prints cut-off, precision and recall per object. Older model files still load and use 0.5.
-- New tests (5 + 3); see below for the test count.
+- 98 tests pass (6 new). The zoom/Colab-only parts (real depth models, real training) still need your first real run.
 
 **Next**
-- Phase 2 (tasks 24-29) is next; 23g (test-time augmentation) is also done in code per earlier notes. Everything else still waits for your first real spatial-notebook run.
+- Phase 2 (tasks 24-29) is next; Everything else still waits for your first real spatial-notebook run.
 
 **For Alex to decide**
 - Nothing blocking. Once the first real run exists, tell me if keys boxes look lost on the contact sheet and I'll lower the keys cut-off.
-- Authorship check: see the PR description.
+- Authorship check: all commits on main and on this branch are by Claude or Alex.
 
 ## 2026-10-30
 **This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32 and #33.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
@@ -110,7 +110,7 @@ conflicts, and `main` is contained in it.)
 **For Alex to decide**
 - Task 23 (web page): OK for it to be a simple "how to try it" page linking to the Colab
   notebook (my suggestion), or do you want an in-browser version (much more work)?
-- Authorship check: see the PR description.
+- Authorship check: all commits on main and on this branch are by Claude or Alex.
 
 ## 2026-10-19
 **This run builds on the open PR #14** (which itself includes #12 and the research PR #13), so

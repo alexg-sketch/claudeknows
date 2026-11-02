@@ -338,7 +338,6 @@ def load_detector(path, device="cpu"):
     return model.to(device).eval(), ck["classes"]
 
 
-@torch.no_grad()
 DEFAULT_CUTOFF = 0.5
 MIN_VAL_BOXES = 20  # fewer validation boxes than this for an object: keep DEFAULT_CUTOFF
 
@@ -350,6 +349,7 @@ def _cut(model, label, min_score):
     return getattr(model, "thresholds", {}).get(label, DEFAULT_CUTOFF)
 
 
+@torch.no_grad()
 def detect(model, image, classes=OBJECT_NAMES, min_score=None):
     """Find objects in a PIL image. Returns [{"label", "score", "box": (x0,y0,x1,y1) fractions}].
 
