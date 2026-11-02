@@ -21,10 +21,12 @@ from .objects import OBJECT_NAMES
 
 OWL_MODEL = "google/owlv2-base-patch16-ensemble"
 PROMPTS = {"water_bottle": "a water bottle", "keys": "a bunch of keys", "shoes": "a shoe"}
-THRESHOLD = 0.3
+# score cut-off per object (task 23m); `--threshold X` on the command line sets all of them.
+# Lower "keys" only if the contact sheet shows keys boxes being lost.
+THRESHOLD = {name: 0.3 for name in OBJECT_NAMES}
 NMS_IOU = 0.5
 EXTRA = "owlv2-extra"  # `by` of a box added to a photo that already had boxes (task 23c)
-FILL_THRESHOLD = 0.4
+FILL_THRESHOLD = {name: 0.4 for name in OBJECT_NAMES}
 FILL_IOU = 0.3
 REJECTED = "rejected"  # looked at, nothing confident found: not used for training
 COLOURS = {"water_bottle": "#1f77b4", "keys": "#d62728", "shoes": "#2ca02c"}
@@ -45,6 +47,13 @@ def nms(found, iou_thresh=NMS_IOU):
         if all(k[0] != f[0] or iou(k[2], f[2]) < iou_thresh for k in keep):
             keep.append(f)
     return keep
+
+
+def cutoff(threshold, label):
+    """Cut-off for one object: `threshold` is a number (all objects) or a dict per object."""
+    if isinstance(threshold, dict):
+        return threshold.get(label, max(threshold.values()))
+    return threshold
 
 
 def post_process(processor, outputs, threshold, target_sizes):
@@ -98,7 +107,7 @@ def autobox_folder(folder, detect, expect=None, threshold=THRESHOLD, log=print):
             continue
         with Image.open(folder / name) as im:
             found = detect(im.convert("RGB"), labels)
-        found = nms([f for f in found if f[1] >= threshold and f[0] in labels])
+        found = nms([f for f in found if f[1] >= cutoff(threshold, f[0]) and f[0] in labels])
         if found:
             entry["by"] = "owlv2"
             entry["boxes"] = [{"label": l, "box": [round(v, 4) for v in b], "score": round(s, 3)}
@@ -150,7 +159,7 @@ def fill_missing(folder, detect, threshold=FILL_THRESHOLD, max_iou=FILL_IOU, log
         have = {b["label"] for b in entry["boxes"]}
         existing = [b["box"] for b in entry["boxes"]]
         added = []
-        for label, score, box in nms([f for f in found if f[1] >= threshold]):
+        for label, score, box in nms([f for f in found if f[1] >= cutoff(threshold, f[0])]):
             if label in have or any(iou(box, e) >= max_iou for e in existing + [a["box"] for a in added]):
                 continue
             added.append({"label": label, "box": [round(v, 4) for v in box],
@@ -207,19 +216,21 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="auto-box all pending photos (needs transformers; Colab)")
     r.add_argument("root", nargs="?", default="data/detection")
-    r.add_argument("--threshold", type=float, default=THRESHOLD)
+    r.add_argument("--threshold", type=float, default=None,
+                   help="one cut-off for all objects (default: the per-object numbers in THRESHOLD)")
     f = sub.add_parser("fill", help="add boxes for objects a photo has no box for (needs transformers; Colab)")
     f.add_argument("root", nargs="?", default="data/detection")
-    f.add_argument("--threshold", type=float, default=FILL_THRESHOLD)
+    f.add_argument("--threshold", type=float, default=None,
+                   help="one cut-off for all objects (default: FILL_THRESHOLD per object)")
     s = sub.add_parser("sheet", help="contact sheet of one folder's auto-boxes")
     s.add_argument("folder")
     s.add_argument("--out", default="contact_sheet.jpg")
     s.add_argument("--n", type=int, default=24)
     a = p.parse_args(argv)
     if a.cmd == "run":
-        autobox_all(a.root, owl_detector(), a.threshold)
+        autobox_all(a.root, owl_detector(), a.threshold if a.threshold is not None else THRESHOLD)
     elif a.cmd == "fill":
-        fill_all(a.root, owl_detector(), a.threshold)
+        fill_all(a.root, owl_detector(), a.threshold if a.threshold is not None else FILL_THRESHOLD)
     else:
         contact_sheet(a.folder, a.out, a.n)
         print(f"saved {a.out}")

@@ -334,12 +334,26 @@ def load_detector(path, device="cpu"):
     min_size, max_size = ck.get("image_size", OLD_IMAGE_SIZE)
     model = build_detector(len(ck["classes"]), pretrained=False, min_size=min_size, max_size=max_size)
     model.load_state_dict(ck["state_dict"])
+    model.thresholds = dict(ck.get("thresholds", {}))  # old checkpoints: none, so 0.5 everywhere
     return model.to(device).eval(), ck["classes"]
 
 
 @torch.no_grad()
-def detect(model, image, classes=OBJECT_NAMES, min_score=0.5):
-    """Find objects in a PIL image. Returns [{"label", "score", "box": (x0,y0,x1,y1) fractions}]."""
+DEFAULT_CUTOFF = 0.5
+MIN_VAL_BOXES = 20  # fewer validation boxes than this for an object: keep DEFAULT_CUTOFF
+
+
+def _cut(model, label, min_score):
+    """min_score if given, else the cut-off saved for this object in the checkpoint, else 0.5."""
+    if min_score is not None:
+        return min_score
+    return getattr(model, "thresholds", {}).get(label, DEFAULT_CUTOFF)
+
+
+def detect(model, image, classes=OBJECT_NAMES, min_score=None):
+    """Find objects in a PIL image. Returns [{"label", "score", "box": (x0,y0,x1,y1) fractions}].
+
+    min_score=None uses each object's own saved cut-off (see `best_thresholds`), else 0.5."""
     import numpy as np
     device = next(model.parameters()).device
     model.eval()
@@ -350,7 +364,7 @@ def detect(model, image, classes=OBJECT_NAMES, min_score=0.5):
     return [{"label": classes[int(l) - 1], "score": float(s),
              "box": (float(b[0]) / w, float(b[1]) / h, float(b[2]) / w, float(b[3]) / h)}
             for b, l, s in zip(out["boxes"].cpu(), out["labels"].cpu(), out["scores"].cpu())
-            if float(s) >= min_score]
+            if float(s) >= _cut(model, classes[int(l) - 1], min_score)]
 
 
 TTA_SCALE = 1.3
@@ -367,7 +381,7 @@ def _tile_boxes():
     return [(x, y, x + TILE_FRAC, y + TILE_FRAC) for y in (0.0, o) for x in (0.0, o)]
 
 
-def detect_tta(model, image, classes=OBJECT_NAMES, min_score=0.5, tiles=False):
+def detect_tta(model, image, classes=OBJECT_NAMES, min_score=None, tiles=False):
     """`detect` with test-time augmentation (task 23g). Off by default everywhere.
 
     Runs the detector on the photo, its mirror image and a 1.3x larger version
@@ -409,7 +423,7 @@ def detect_tta(model, image, classes=OBJECT_NAMES, min_score=0.5, tiles=False):
     b, sc, lb = weighted_boxes_fusion(boxes, scores, labels, iou_thr=0.55, skip_box_thr=0.05,
                                       conf_type="max" if tiles else "avg")
     found = [{"label": classes[int(l)], "score": float(s), "box": tuple(float(v) for v in bx)}
-             for bx, s, l in zip(b, sc, lb) if float(s) >= min_score and bx[2] > bx[0] and bx[3] > bx[1]]
+             for bx, s, l in zip(b, sc, lb) if float(s) >= _cut(model, classes[int(l)], min_score) and bx[2] > bx[0] and bx[3] > bx[1]]
     return sorted(found, key=lambda f: -f["score"])
 
 
@@ -481,6 +495,70 @@ def predict_samples(model, samples, min_score=0.05, tta=None):
                      if tta else detect(model, im, min_score=min_score))
         out.append((s, list(s.boxes), [(f["label"], f["score"], f["box"]) for f in found]))
     return out
+
+
+def _match(preds, gt, label, cut, iou_thresh=0.5):
+    """(true positives, false positives) for one object in one photo at score cut-off `cut`."""
+    g = [b for l, b in gt if l == label]
+    used, tp, fp = set(), 0, 0
+    for _, s, b in sorted((p for p in preds if p[0] == label and p[1] >= cut), key=lambda p: -p[1]):
+        best, best_iou = None, iou_thresh
+        for j, gb in enumerate(g):
+            if j not in used and iou(b, gb) >= best_iou:
+                best, best_iou = j, iou(b, gb)
+        if best is None:
+            fp += 1
+        else:
+            used.add(best)
+            tp += 1
+    return tp, fp
+
+
+def cutoff_table(images, classes=OBJECT_NAMES, cuts=None):
+    """Per object: {"cutoff", "precision", "recall", "n"} at `cuts` (default: F1 sweep 0.05-0.95).
+
+    images: [(sample, gt, preds)] as from `predict_samples` (low min_score, e.g. 0.05).
+    An object with fewer than MIN_VAL_BOXES ground-truth boxes keeps 0.5 (too noisy to pick)."""
+    sweep = [round(0.05 * i, 2) for i in range(1, 20)]
+    out = {}
+    for label in classes:
+        n = sum(1 for _, gt, _ in images for l, _ in gt if l == label)
+
+        def pr(cut):
+            tp = fp = 0
+            for _, gt, preds in images:
+                a, b = _match(preds, gt, label, cut)
+                tp, fp = tp + a, fp + b
+            return (tp / (tp + fp) if tp + fp else 0.0), (tp / n if n else 0.0)
+
+        if cuts is not None:
+            cut = cuts.get(label, DEFAULT_CUTOFF)
+        elif n < MIN_VAL_BOXES:
+            cut = DEFAULT_CUTOFF
+        else:
+            def f1(c):
+                p, r = pr(c)
+                return 2 * p * r / (p + r) if p + r else 0.0
+            cut = max(sweep, key=lambda c: (f1(c), -abs(c - DEFAULT_CUTOFF)))
+        p, r = pr(cut)
+        out[label] = {"cutoff": cut, "precision": p, "recall": r, "n": n}
+    return out
+
+
+def best_thresholds(model, val_samples, classes=OBJECT_NAMES):
+    """Score cut-off per object with the best F1 on VALIDATION photos only (never test/gold).
+    Returns {object: cut-off}; objects with fewer than 20 validation boxes keep 0.5."""
+    images = predict_samples(model, val_samples, 0.05)
+    return {k: v["cutoff"] for k, v in cutoff_table(images, classes).items()}
+
+
+def format_cutoffs(table):
+    lines = ["\nscore cut-off per object (chosen on validation photos)"]
+    for label, t in table.items():
+        note = "" if t["n"] >= MIN_VAL_BOXES else "  (too few validation boxes: kept 0.5)"
+        lines.append(f"  {label:<28}cut-off {t['cutoff']:.2f}   precision {100 * t['precision']:.0f}%"
+                     f"   recall {100 * t['recall']:.0f}%   ({t['n']} boxes){note}")
+    return "\n".join(lines)
 
 
 def false_alarms_per_photo(model, negatives, min_score=0.5):
@@ -667,15 +745,22 @@ def main(argv=None):
                                      neg_frac=a.neg_frac, zoom_crop_p=a.zoom_crop_p,
                                      ema_decay=a.ema_decay, resume_path=a.resume,
                                      workers=a.workers)
-        save_detector(model, a.out, hist, extra={"train_stats": stats})
+        cuts = best_thresholds(model, val) if val else {}
+        if cuts:
+            print(format_cutoffs(cutoff_table(predict_samples(model, val, 0.05), cuts=cuts)))
+        save_detector(model, a.out, hist, extra={"train_stats": stats, "thresholds": cuts})
         print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
         model, classes = load_detector(a.checkpoint)
         results = predict_samples(model, test, tta=a.tta)
+        saved = getattr(model, "thresholds", {})
         alarms = false_alarms_per_photo(model, negs_test)
         n_scenes = len({scenes[x.group] for x in test if x.source == "own"}) or None
         print(format_report(build_report(results, classes), bootstrap_ci(results, classes),
                             alarms, n_scenes))
+        if saved:
+            print(format_cutoffs(cutoff_table(results, classes, cuts=saved)) +
+                  "\n(precision/recall on the test set at those cut-offs)")
         if a.tta:
             plain = predict_samples(model, test)
             print(f"\nwithout --tta {a.tta}:")
