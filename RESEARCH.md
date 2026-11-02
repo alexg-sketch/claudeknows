@@ -3,6 +3,260 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-10-29
+
+**Summary.** Started from PR #32 (newest open branch; it includes #25 to #31, so merging it is enough). Searched for video-box propagation
+(SAM 2), small-data Faster R-CNN fine-tuning results and free-Colab limits. No new detector, labeller or depth change is worth making.
+Reading the training code against Colab's limits turned up two practical gaps instead. (1) Training cannot pick up where it stopped: if the free
+Colab session drops (idle timeout, 12-hour cap, quota), the whole run is lost, and the roadmap now plans many 15-epoch ablation runs
+(EMA, zoom windows, rotation, composites). (2) The detector's data loader runs in one process (no `num_workers`), so the GPU waits while the
+CPU decodes JPEGs and applies rotations, pastes and zooms. Both are plumbing, not new science, and cost few lines.
+
+### Recommendations
+
+**1. Resumable training (new task 23n; small effort, low risk).**
+- What: save the full training state to a file after every epoch and, if that file exists, continue from it. Free Colab gives a T4, roughly a
+  12-hour hard cap and an idle timeout (third-party figures; Google does not guarantee free GPUs), so a dropped session is normal, and every
+  ablation planned in 23e / 23j / 23k / 23b is a fresh 15-epoch run.
+- How: `train_detector(..., resume_path=None)` (flag `--resume PATH`, default none = today's behaviour). After each epoch `torch.save` (to a temp file, then
+  `os.replace`, so a cut-off write cannot corrupt it) a dict with: model state, optimiser, scheduler, GradScaler, EMA state (if on), `epoch`, `step`,
+  `history`, `val_history`, `best`, `best_epoch`, `best_state`, the Python `random.Random` state used for negatives, and the settings that must match
+  (epochs, batch size, lr, zoom/rot/composite/ema values). If the file exists and the settings match, load all of it and start the loop at `epoch+1`; if
+  they differ, say so and start fresh. Delete or ignore the file when training ends normally. The notebook passes `--resume
+  /content/drive/MyDrive/claudeknows_models/resume_<run-name>.pt` when Drive is on, so "Run all" after a disconnect simply continues.
+- Acceptance: CPU test with `weights=None`: train 4 epochs in one go versus 2 epochs, stop, resume for 2 more; the final weights match to 1e-5
+  (use `max_batches`, fixed seed, workers 0); a resume file with different settings is ignored with a message; no `resume_path` changes nothing. The data
+  shuffle after resume may differ from an unbroken run in the epoch it restarts; say so in the docstring rather than chase exact equality.
+- Expected gain: no change to accuracy; saves up to a whole run of Colab quota after each disconnect. Effort: about 40 lines. Risk: low; resume files
+  are large (model + optimiser + best copy, a few hundred MB), so keep one per run and overwrite it. Licence: none (PyTorch BSD-3).
+
+**2. Load photos in parallel (new task 23o; tiny effort, low risk).**
+- What: `train_detector`'s `epoch_loader` builds `DataLoader(ds, batch_size, shuffle=True, collate_fn=collate)` with the default `num_workers=0`, so JPEG
+  decoding, affine rotation, composite pasting and zoom windows all happen in the training process between GPU steps. Colab VMs usually have 2
+  CPU cores (this sandbox shows 4), so 2 worker processes is the standard fix. The classifier loaders in `data.py` and `evaluate.py` already use 2.
+- How: add `num_workers=2` (flag `--workers`, default 2; 0 for tests) to `train_detector`, `predict_samples` / `mean_ap` loaders if they use a loader, plus
+  `pin_memory=True` when CUDA and `persistent_workers=False` (the loader is rebuilt every epoch because negatives are re-sampled, so persistent workers
+  would not help). Seed each worker: pass a `worker_init_fn` (and `generator`) that derives from `seed + worker_id`, because `CompositePaste` and the
+  random zoom/rotation use their own RNGs and workers would otherwise repeat the same "random" draws every epoch. If the transform holds one `random.Random`,
+  copy-on-fork gives every worker the same stream: reseed it in `worker_init_fn`.
+- Acceptance: CPU test with `weights=None` and `num_workers=2`: two workers do not return identical augmentation draws for identical inputs; the loop still
+  finishes; `--workers 0` reproduces today's results with the same seed. Time one epoch with 0 vs 2 workers on Colab and print it in the notebook so the gain is visible.
+- Expected gain: shorter epochs, most of all with composite and zoom turned on; no change to accuracy. Effort: about 10 lines. Risk: the RNG-per-worker
+  point above is the one thing that can quietly make augmentation less random. Licence: none.
+
+### Considered but not recommended
+- **SAM 2 box propagation to label video frames (Apache-2.0 code, tools such as SAM2YOLO and Roboflow's video tracker):** a real way to label one frame and
+  follow the object through the clip, but it needs a hand-drawn seed box per clip and a large model next to the detector; OWLv2 plus the consistency rule
+  in task 26 already covers this more cheaply. Found no 2026 study of its quality on small objects. Revisit if OWLv2 boxes on Alex's footage look poor on the contact sheets.
+- **More backbone-unfreezing / resolution experiments for torchvision MobileNetV3 Faster R-CNN:** the search returned only API docs and no results for
+  this size; nothing to act on.
+- **Mixed precision / batch-size tweaks:** already done in 23a; a T4 gains nothing from bf16.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- SAM 2 for video annotation (tool overview): https://www.labellerr.com/blog/sam-2-video-annotation/
+- SAM2YOLO, labels from video with SAM 2: https://app.readytensor.ai/publications/a-software-tool-to-generate-labeled-image-data-from-input-videos-using-sam2-HtrHlVmlQ7La
+- Free Colab limits (third-party summary, unverified against Google): https://www.hivenet.com/post/google-colaboratory-gpu-complete-guide-to-free-cloud-gpu-access-and-limitations
+- torchvision Faster R-CNN MobileNetV3 docs: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn.html
+- PyTorch data loading (`num_workers`, `worker_init_fn`): https://pytorch.org/docs/stable/data.html (could not be fetched from the sandbox today; standard documented behaviour)
+
+## 2026-10-27
+
+**Summary.** Started from PR #30 (newest open branch; it includes #25 to #29, so merging it is enough). Searched for noisy auto-box handling,
+threshold choice for detectors, and phone-camera depth calibration. No new detector, depth or labeller change is worth making. One small
+gap turned up in the code itself: every object shares one cut-off, both when OWLv2 draws the training boxes (0.3, and 0.4 for the "fill in"
+step) and when the trained detector decides what to show (0.5). A 2026 study of open-vocabulary detectors found the best cut-off differed a
+lot between models (0.10 to 0.41), because these scores are not comparable between objects. Keys are the hardest, least-seen object, so they
+probably score lower than bottles and get dropped by a cut-off tuned for bottles.
+
+### Recommendations
+
+**1. Per-object score cut-offs (new task 23m; small effort, low risk).**
+- What: pick one cut-off per object (water_bottle, keys, shoes) instead of a shared number, in two places. (a) OWLv2 auto-boxing / fill-in:
+  keys get a lower cut-off than the others if the contact sheet shows keys boxes are being lost. (b) The trained detector: the score above
+  which a box is shown, chosen from the validation photos by sweeping 0.05 ... 0.95 and taking the value with the best F1 (balance of missed
+  vs. false boxes) for each object. Roboflow's guidance says the same: choose the operating point from the precision-recall curve per class and
+  confirm on a held-out set; mAP alone does not tell you the cut-off.
+- How: `autobox.py`: `THRESHOLD` and `FILL_THRESHOLD` become dicts keyed by prompt label (default value = today's number for every object, so
+  behaviour is unchanged until changed); CLI `--threshold` still sets all. `detector.py`: `best_thresholds(model, val_samples)` returns
+  `{class: score}` by F1 sweep (greedy IoU 0.5 matching, same as `mean_ap`); skip an object with fewer than 20 validation boxes (keep 0.5);
+  save the dict in the checkpoint as `thresholds`; `detect`/`detect_tta` use `min_score=None` meaning "use the saved per-object cut-off, else 0.5".
+  The report prints precision, recall and chosen cut-off per object, with the 23f range.
+- Acceptance: CPU test with a fake model: an object whose true boxes score about 0.3 gets a cut-off near 0.3 and one whose false boxes score 0.6
+  gets above 0.6; old checkpoints without `thresholds` still load and behave as before; fewer than 20 val boxes keeps 0.5. The cut-offs are fitted on
+  validation photos only; test and the Phase 2 gold set (task 25) are never used to pick them.
+- Expected gain: modest and mostly for keys (more of them found, shown, or labelled); no change to mAP, which ignores the cut-off. Effort: about 50 lines.
+  Risk: with few validation boxes the choice is noisy, hence the 20-box minimum and the 0.5 fallback. Licence: none (own code).
+
+### Considered but not recommended
+- **Per-object co-teaching for VLM pseudo-labels (arXiv 2511.09955, Nov 2025):** two detectors train together and each drops boxes its partner finds high-loss; +15 mAP over plain pseudo-labels on KITTI. It is built on YOLO (AGPL) and needs two models with per-box losses, which torchvision's Faster R-CNN does not expose. Too much work for our few hundred auto-boxes; the agreement and consistency rules in tasks 23c / 26 are the cheap version.
+- **Box-tightness / localisation-quality filtering of OWLv2 boxes:** found no 2025-26 paper specific to it; OWLv2's own authors argue for weak filtering. Revisit if the contact sheets show loose boxes.
+- **Noisy tiny-object methods (DN-TOD arXiv 2401.08056, Point Teacher arXiv 2412.05837):** aimed at aerial images, with code not released or not confirmed.
+- **Phone-specific depth fine-tuning:** found no 2026 source; the leave-one-out scale fix and the blend in 23l already cover calibration. Apple's Core ML build of Depth Anything V2 Small matters only for on-phone use later (phase 3).
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Open-vocabulary detectors have uncalibrated scores, best cut-off differs by model (Apr 2026): https://arxiv.org/pdf/2604.09920
+- How to set a confidence threshold for object detection (Roboflow): https://blog.roboflow.com/how-to-set-a-confidence-threshold-for-object-detection/
+- Per-object co-teaching with VLM pseudo-labels: https://arxiv.org/abs/2511.09955
+- Scaling open-vocabulary detection (OWLv2, weak filtering of pseudo-labels): https://arxiv.org/abs/2306.09683
+- DN-TOD, tiny objects under label noise: https://www.arxiv.org/abs/2401.08056
+- Point Teacher: https://arxiv.org/abs/2412.05837
+- Depth Anything V2 repo (metric Small models): https://github.com/DepthAnything/Depth-Anything-V2
+
+## 2026-10-25
+
+**Summary.** Started from PR #28 (newest open branch; it includes #25, #26 and #27). Searched for class-imbalance fixes in detection,
+fine-tuning schedules for tiny datasets and metric-depth calibration. Nothing changes the detector or depth model choices.
+One idea is worth adding for the "how far away" part: right now the number shown in metres is the plain average of two guesses (the depth
+model and the object-size guess). Recent robot-navigation papers show that metric depth models can be off by metres in a new room unless
+their scale is corrected, so the way the two guesses are combined should be chosen from Alex's tape-measured photos rather than fixed in advance.
+
+### Recommendations
+
+**1. Choose how the two distance guesses are combined from the tape-measured photos (new task 23l, builds on done task 21; small effort, low risk).**
+- What: a 2026 robot study (arXiv 2603.19602) found a scale-corrected Depth Anything V2 Small gave 0.69 m mean error while the
+  off-the-shelf indoor metric Small model gave 4.19 m, blamed on camera and room differences. An evaluation across six indoor sets
+  (CSIR, 2025) found errors grow with distance (89% of errors within 0.5 m up to 2 m, 71% at 6 m). So the metric model's scale is
+  the weak point and a phone camera is not what it was trained on. The size-prior guess has the opposite weakness (needs EXIF,
+  and real object sizes vary). Averaging two numbers with different error habits is a reasonable default but not necessarily the best one.
+- How: in `distance.py` `check_distances`, besides `depth`, `size`, `shown`, also score (a) the geometric mean `sqrt(depth*size)`
+  (errors in distance are multiplicative, so averaging in log space treats "too near" and "too far" fairly) and (b) a weighted
+  log-space blend `exp(w*log(size) + (1-w)*log(depth))` with `w` fitted leave-one-out on the `distance/` photos (grid 0, 0.1 ... 1).
+  Print median % error for each (with the existing leave-one-out scale fix) and make the winner the number `estimate_distances`
+  shows by default (a module constant `BLEND_W`, default 0.5 = geometric mean until real data exist). Also: when one photo has two or more
+  detections with a size prior (bottle/shoe, not keys), fit ONE scale for the photo, `median(size_m / depth_m)`, apply it to the
+  depth-model metres of all objects in that photo (so keys get a calibrated number too) and flag `calibrated_by_photo=True`.
+- Acceptance: test with fake maps: geometric mean of 1 m and 4 m is 2 m; the blend weight picks 1.0 when the depth guess is wildly wrong and 0.0
+  when the size guess is; the per-photo scale makes a keys box in a photo with a bottle land at the right distance when the metric map is
+  uniformly 2x too large. Report keeps saying near/far order is reliable and metres approximate.
+- Expected gain: modest for metres (guess: a few points of % error), none for near/far order. Effort: about 40 lines. Risk: low; with few
+  `distance/` photos the fitted `w` is noisy, hence the default of 0.5 until there are 10+ photos. Licence: none (own code).
+
+### Considered but not recommended
+- **Repeat-factor sampling / E-IRFS for class imbalance (arXiv 2403.07113, 2503.21893):** the downloader already caps every object at ~300 photos, so classes are balanced; revisit only if Alex's own footage skews one class.
+- **Learned per-image depth calibration heads (arXiv 2601.01457):** trains new heads and needs captions; too much for the gain when a size prior is available.
+- **Progressive fine-tuning with plateau-aware LR (CVPR 2026, arXiv 2603.28182):** aimed at 1-10 shot cross-domain detection; the current warm-up + cosine + early stopping recipe (23a) is adequate at hundreds of boxes. I could not read its supplement.
+- **YOLO26-Depth:** Ultralytics, AGPL code.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Robot navigation with scale-corrected Depth Anything V2 (0.69 m vs 4.19 m): https://arxiv.org/pdf/2603.19602
+- Indoor metric depth error versus distance (2025 evaluation): https://researchspace.csir.co.za/signposting/describedby/28469156-78e2-4323-85c8-ed7e689b9378
+- Language as Prior, Vision as Calibration (per-image affine in inverse depth): https://arxiv.org/html/2601.01457v1
+- Class imbalance in object detection study: https://arxiv.org/pdf/2403.07113
+- Cross-domain few-shot detection, fine-tuning matters (CVPR 2026): https://arxiv.org/abs/2603.28182
+- Depth Anything V2 metric indoor small: https://huggingface.co/kerasformers/depth_anything_v2_metric_indoor_small
+
+## 2026-10-24
+
+**Summary.** Started from PR #27 (newest open branch; it includes #25 and #26). Searched for new detector families and licences, open-vocabulary
+labellers, small metric-depth models, frame-sampling practice and training-stability tricks. Nothing changes the detector, depth or
+auto-labelling choices. One small, cheap training idea is worth a trial: keep a smoothed ("moving average") copy of the detector's
+weights while training. It costs a few lines, uses only PyTorch, and may help most when the tiny validation set makes the
+per-epoch score jumpy. The evidence for it is indirect (no clean small-data study found), so it is an ablation, not a promise.
+
+### Recommendations
+
+**1. Weight moving average (EMA) as a training option (new task 23k; tiny effort, low risk).**
+- What: keep a second copy of the weights that is updated after every optimiser step as `ema = d*ema + (1-d)*weights`.
+  The smoothed copy is usually a little better and much steadier than the raw weights, which matters when training uses only
+  hundreds of photos and a few dozen validation photos (best-epoch choice is noisy). Semi-supervised and few-annotation
+  detection papers (2023-2025) use an EMA with a cosine-scheduled keep rate and report about +0.7 point from the schedule; popular
+  YOLO/RT-DETR/D-FINE trainers switch EMA on by default. No study I found isolates its gain for plain fine-tuning on a
+  small set, so keep it only if validation shows it helps.
+- How: in `train_detector` (detector.py) add `ema_decay=0.0` (flag `--ema-decay`, 0 = off). Use
+  `torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay), use_buffers=True)` and call
+  `ema.update_parameters(model)` after `sched.step()`. Try 0.999 (about 1000 steps memory; with ~15 epochs of a few hundred
+  steps lower it to 0.99-0.995 if the run is short). Score validation mAP on `ema.module` instead of `model`, and keep
+  best-epoch weights from the EMA copy. Save the EMA weights in the checkpoint. torchvision detection models use frozen
+  BatchNorm, so there are no running statistics to worry about. Skip the first warm-up iterations
+  (copy weights until iteration `warmup`, then start averaging).
+- Acceptance: CPU test with `weights=None`: after a few steps with decay 0.9 the EMA weights differ from the raw weights and
+  lie between the start and current values; decay 0 leaves behaviour unchanged (existing tests untouched). Ablation
+  `--ema-decay` 0 / 0.995 on the validation set with the 23f range; keep it on only if overall mAP does not drop and the
+  best-epoch curve is steadier.
+- Expected gain: small (guess 0-2 mAP, mostly steadier results). Effort: about 15 lines. Risk: too slow a decay under-trains a
+  short run, hence the ablation. Licence: PyTorch (BSD-3), no new library.
+
+### Considered but not recommended
+- **SAM 3 for auto-boxing instead of OWLv2:** Meta's custom "SAM License" is not Apache-2.0 (limits on redistribution, export-control and military uses, can be changed by Meta); commercial suitability unclear and the model is much larger. Stay with OWLv2 (Apache-2.0).
+- **DEIMv2 / D-FINE:** the Atto-to-Nano sizes use HGNetv2 backbones, but the S-to-X sizes use DINOv3 backbones under the separate DINOv3 licence, and community repackages (e.g. OV-DEIM) can be CC BY-NC. Not worth the swap before the first real results; still on "For Alex to decide".
+- **Frame difference / uniform frame sampling for training (arXiv 2505.18302, 2025):** supports dropping near-identical video frames, but I could only read the abstract (the sandbox cannot fetch arXiv). Task 24 already plans perceptual-hash de-duplication for walks; revisit for the 2 fps training frames only if the own-footage score looks inflated after 23h.
+- **Depth Pro / UniDepthV2 / Depth Anything 3 metric Large:** licences or sizes still unconfirmed or too large (same conclusion as 10-16 to 10-21).
+- **More unfreezing / bigger augmentation recipes:** covered 10-20; the far-object work (23g tiles, 23j zoom windows) is the right next experiment.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Few-annotation detection study (EMA with cosine keep-rate schedule): https://arxiv.org/pdf/2310.19936
+- Training-based model refinement for semi-supervised detection: https://arxiv.org/pdf/2307.13755
+- Bag of tricks for real-time detection (EMA at several decays): https://arxiv.org/pdf/2508.19804
+- Two-stage training paradigm for small datasets: https://arxiv.org/pdf/2309.05652
+- Sampling strategies for efficient detector training (abstract only): https://arxiv.org/pdf/2505.18302
+- SAM 3 licence: https://huggingface.co/facebook/sam3/blob/main/LICENSE
+- DEIMv2 (Apache-2.0 code, DINOv3 backbones): https://arxiv.org/abs/2509.20787
+- OV-DEIM weights repackaging, CC BY-NC 4.0: https://huggingface.co/LibreYOLO/LibreOVDEIMs
+
+## 2026-10-22
+
+**Summary.** Started from PR #25 (bigger photos, 15 rounds), the newest open branch. That PR exists because run 3 found 87% of
+near objects but only 28% of far ones. This run looked for ways to help small, far objects beyond making the photo bigger.
+Nothing changes the detector or depth choices. The one useful, well-supported idea is "look closer": run the detector on
+zoomed-in overlapping pieces (tiles) of the photo as well as the whole photo, and train on zoomed windows so that
+training and test objects look the same size. Tiling has a lot of published support for small objects, costs no new
+training data, and needs only a small extra library we already planned (`ensemble-boxes`).
+
+### Recommendations
+
+**1. Add tiles to test-time augmentation (refines task 23g; small effort, low risk).**
+- What: SAHI (Slicing Aided Hyper Inference) cuts a photo into overlapping tiles, runs the detector on each tile and
+  merges the boxes. The original paper reports +5 to +7 AP on small objects from inference alone, with no retraining
+  of the detector. Newer work (2026) says the weak point is how tile results are merged and ranked, and that tiling
+  wastes time on sparse scenes; our photos have 1-3 objects and the tiles are only 4, so cost is small.
+- How: extend the planned `detect_tta` (23g) with a `tiles` option: full photo + 4 tiles (2x2, each 60% of the side,
+  ~20% overlap, resized to the model size), boxes mapped back, merged by `weighted_boxes_fusion` (iou_thr 0.55). I
+  suggest writing the tiling ourselves (about 30 lines) rather than installing `sahi`: it keeps Colab setup simple and
+  works directly with our torchvision model.
+- Expected gain: the best-supported fix for the far bin (28%); a guess of +5-10 points far recall. Risk: duplicate or
+  cut-off boxes at tile edges (WBF handles most). Cost: 5x inference time, so off by default and off in the web page.
+  Licence: `ensemble-boxes` MIT; SAHI itself MIT (not used).
+
+**2. Zoomed-window training crops (new task 23j; small effort, low risk).**
+- What: Roboflow (2026) and the MathWorks tiled-training guide both say tiling works best when training and inference
+  see objects at the same scale. Training photos are shown whole (with affine zoom 0.5-1.5), but a tile at test time
+  zooms objects by about 1.7x, a case training rarely shows.
+- How: see task 23j (random 50-70% window that keeps at least one whole box, p=0.25, behind a flag, ablation).
+- Expected gain: makes recommendation 1 work better and also gives far objects more training pixels. Risk: windows can
+  drop context; mitigated by the flag and the keep-only-if-helps rule. Licence: own code.
+
+### Considered but not recommended
+- **Smaller anchors (the torchvision MobileNet model uses sizes 32-512 on coarse feature maps):** plausible, but our "far"
+  bin is under 3% of the photo area (roughly up to 130 px at 640x960), which the current anchors cover; changing them
+  also forces new RPN weights and loses the COCO-pretrained head. Revisit only if tiles do not help.
+- **Full tiled training at native resolution (MathWorks YOLOX style):** needs photos larger than the 960 px we store; the zoomed windows in 23j get most of the effect.
+- **ROI-gated / content-adaptive SAHI (arXiv 2608.23923):** aimed at big sparse scenes (drones); our images are small.
+- **Training-free tile re-scoring preprint (Research Square):** unreviewed, one dataset; WBF is enough for now.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- Slicing Aided Hyper Inference and Fine-tuning for Small Object Detection (SAHI): https://arxiv.org/abs/2202.06934
+- ROI-Gated SAHI (content-adaptive slicing): https://arxiv.org/pdf/2608.23923
+- Edge tiling during inference (Roboflow): https://roboflow.com/blog/edge-tiling-during-inference
+- Detect small objects using tiled training (MathWorks): https://www.mathworks.com/help/vision/ug/detect-small-objects-using-tiled-training-yolox.html
+- Cascaded zoom-in detector: https://www.arxiv.org/pdf/2303.08747
+- ISPRS 2026 tiling speed-up for SAHI-style pipelines: https://isprs-annals.copernicus.org/articles/XI-3-2026/81/2026/isprs-annals-XI-3-2026-81-2026.pdf
+- torchvision Faster R-CNN MobileNetV3 source (anchor sizes): https://github.com/pytorch/vision/blob/main/torchvision/models/detection/faster_rcnn.py
+
 ## 2026-10-21
 
 **Summary.** Started from PR #19 (which includes #18 and #12-#17). Searched for new small-data detectors, small

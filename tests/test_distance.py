@@ -1,3 +1,4 @@
+import statistics
 import json
 
 import numpy as np
@@ -124,3 +125,30 @@ def test_open_photo_explains_unreadable_files(tmp_path):
     (tmp_path / "notes.txt").write_text("not a photo")
     with pytest.raises(ValueError, match="Could not open notes.txt"):
         D.open_photo(tmp_path / "notes.txt")
+
+
+def test_geometric_mean_and_blend_weight():
+    assert abs(D.blend_metres(1.0, 4.0) - 2.0) < 1e-9
+    assert D.blend_metres(None, 3.0) == 3.0 and D.blend_metres(None, None) is None
+    # depth guess wildly wrong -> trust size (w=1); size wrong -> trust depth (w=0)
+    rows = [{"depth": 10.0 * t, "size": t, "true": t} for t in (1.0, 2.0, 3.0)]
+    assert D.fit_blend_weight(rows)[0] == 1.0
+    rows = [{"depth": t, "size": 10.0 * t, "true": t} for t in (1.0, 2.0, 3.0)]
+    assert D.fit_blend_weight(rows)[0] == 0.0
+
+
+def test_per_photo_scale_calibrates_keys():
+    img = Image.new("RGB", (100, 100))
+    rel = lambda im: np.ones((100, 100))
+    met = lambda im: np.full((100, 100), 2.0)  # 2x too large for everything
+    # focal 100 px: bottle 30px tall -> 0.733 m, shoe 28px wide -> 1.0 m
+    dets = [{"label": "water_bottle", "score": .9, "box": (0.1, 0.1, 0.2, 0.4)},
+            {"label": "shoes", "score": .9, "box": (0.5, 0.5, 0.78, 0.6)},
+            {"label": "keys", "score": .9, "box": (0.8, 0.8, 0.9, 0.9)}]
+    res = {r["label"]: r for r in D.estimate_distances(img, dets, rel, met, focal_px=100)}
+    assert all(r["calibrated_by_photo"] for r in res.values())
+    # median of (0.733/2, 1.0/2) = 0.4333 -> keys depth 2.0 * 0.4333
+    assert abs(res["keys"]["metres_depth"] - 2.0 * statistics.median([0.22 * 100 / 30 / 2, 0.28 * 100 / 28 / 2])) < 1e-6
+    # a lone detection is not calibrated
+    one = D.estimate_distances(img, dets[:1], rel, met, focal_px=100)[0]
+    assert not one["calibrated_by_photo"]
