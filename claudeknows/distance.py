@@ -252,6 +252,8 @@ def check_distances(photos, detect_fn, relative_fn, metric_fn, min_score=0.3):
                      "depth": r["metres_depth"], "size": r["metres_size"],
                      "shown": r["metres"], "relative": r["relative"]})
     summary = {"photos": len(photos), "found": len(rows)}
+    for r in rows:  # the combined guesses, scored like the others
+        r["geo"] = blend_metres(r["depth"], r["size"], 0.5)
     for key in ("depth", "size", "shown", "geo"):
         have = [r for r in rows if r[key]]
         if not have:
@@ -264,8 +266,6 @@ def check_distances(photos, detect_fn, relative_fn, metric_fn, min_score=0.3):
             corrected = _loo_correct(have, key)
             rel_c = [abs(c - r["true"]) / r["true"] for c, r in zip(corrected, have) if c]
             summary[key]["median_error_pct_after_scale_fix"] = 100 * statistics.median(rel_c)
-    for r in rows:  # the combined guesses, scored like the others
-        r["geo"] = blend_metres(r["depth"], r["size"], 0.5)
     both = [r for r in rows if r["depth"] and r["size"]]
     if both:
         w, w_err = fit_blend_weight(both)
