@@ -1,5 +1,19 @@
 # Progress log
 
+## 2026-11-04
+**This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32, #33, #34 and #35.** Merging this one is enough; the others will close automatically. (Branch started from #35, which already contained all the others; `main` is contained in it.)
+
+**Done** (roadmap task 24, first step of Phase 2)
+- Walk import (`claudeknows/walks.py`, `python -m claudeknows.walks <walks folder> <output folder>`): takes every NEW video in `claudeknows_photos/walks/`, turns it into frames (same ~2 per second, blurry ones skipped, iPhone .MOV supported, via the existing frame code), then throws away near-identical frames (e.g. while you stood still) using a "perceptual hash" (a tiny fingerprint of how a picture looks). A `manifest.json` remembers each processed video by its content, so running it again only handles new videos, even if you rename one. A missing or empty `walks/` folder just does nothing.
+- 3 new tests (fingerprint similar vs different, duplicate dropping, "processed once"). Footage stays private: nothing is committed.
+
+**Next**
+- Task 25 (gold test set), then 26-29.
+
+**For Alex to decide**
+- Nothing blocking. The notebook for walks comes with task 28.
+- Branch note: today's work is on `claude/practical-babbage-9xejcc` rather than `claude/2026-11-04` (the session was assigned this branch).
+
 ## 2026-11-02
 **This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32, #33 and #34.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
 
