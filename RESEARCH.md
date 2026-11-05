@@ -3,6 +3,66 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-05
+
+**Summary.** Started from PR #36 (newest open branch; it includes #25 to #35, so merging it is enough). Tasks up to 24 are now built, so I looked
+ahead at the "robot retrains itself" phase (tasks 25-29), which is where the next code goes. Searched for self-training safeguards, how to
+compare two models fairly on a small test set, and any new detector or depth model. No new detector or depth model changes our choices (RF-DETR is
+still the clear Apache-2.0 option; DEIMv2's licence could not be confirmed here; Depth Anything V2 metric indoor models are still only accurate to
+roughly +/-0.3-0.7 m in a 2025 robotics study). Two safeguards for the learning loop are worth writing into the plan now, before task 26/27 are coded.
+
+### Recommendations
+
+**1. Make the promotion gate (task 27) statistically honest (small effort, low risk).**
+- What: `compare_runs` (from 23f) already does a paired bootstrap on overall mAP, resampling whole videos/scenes. The gate also needs it per object
+  (the rule is "no object worse by more than ~2 points"), and with a small gold set a +1 point change is usually noise. A 2025 preprint on paired
+  bootstrap protocols reports that single runs often call 0.6-2 point gains "significant" that a paired multi-seed test does not (single preprint:
+  provisional); a 2025 position paper warns that normal-theory intervals undercover at small sample sizes, so resampling is the safer choice.
+- How: extend `compare_runs` to also return the paired difference and 95% range per object (same resamples for every object and both models); use
+  `n=5000` for the gate. Gate rule in task 27: promote only if (a) the overall difference's lower bound is > 0, (b) each object's difference has a
+  lower bound > -0.02, and (c) the overall gain is bigger than a "noise floor". The noise floor = the spread (max - min of overall gold mAP) between
+  the current recipe trained with 3 seeds, measured once at the start of phase 2 and saved next to the models in Drive; re-measure only if the
+  recipe changes. If the gold set has fewer than 5 distinct scenes (23h), never promote automatically: print "not enough evidence" and keep the model.
+- Acceptance: tests with fake results: identical models -> "no clear difference", not promoted; a model clearly better overall but clearly worse on
+  one object -> not promoted; noise-floor test (gain smaller than floor -> not promoted).
+- Expected gain: avoids promoting a model that just got lucky and then drifting downhill. Effort: ~50 lines. Risk: gate may be too strict early; that
+  only costs a delayed upgrade and the message says why. Licence: none.
+
+**2. Never train on half-labelled walk frames (task 26; tiny effort, low risk).**
+- What: detectors treat every unlabelled region as background. If a walk frame has a confident detector box that OWLv2 does not confirm (or the other
+  way round) and we train on the frame with only the agreed boxes, we teach the model that a real object is background. Class-incremental detection
+  papers (MD-DETR and others) describe exactly this failure and fix it by keeping confident old-model predictions as labels (their best cut-off was
+  0.65, on their data).
+- How: in task 26, a frame is used for training only if EVERY confident box (either labeller, score >= the per-object cut-off from 23m) was
+  resolved: agreed, or confirmed/rejected by Alex in the review batch. Frames with an unresolved confident box are held back (not trained on) and are
+  counted in the summary. Also keep a fixed replay share in task 27 training: each epoch mixes in the original human/Open Images training set (at
+  least 50% of samples) so the model cannot forget the starting objects; self-labelled share stays <= 30% (this is the cap already in task 26).
+- Acceptance: test: a frame with one agreed box and one detector-only confident box is excluded; after the review answer "yes" it is included with
+  both boxes; a frame with only low-score disagreements is kept.
+- Expected gain: fewer silent label errors, the biggest known risk of self-training. Licence: none.
+
+### Considered but not recommended
+- **RF-DETR / DEIMv2 swap:** no controlled small-data test found; RF-DETR nano trails its bigger sizes on tiny objects. Still Alex's model choice (open since 10-16).
+- **Prior Depth Anything (2505.10565) / lookup-table metric calibration:** needs sparse true-distance points per scene; our `distance/` photos stay test-only and 23l already fits a leave-one-out scale.
+- **Per-class dynamic pseudo-label counts (Predicting Class Distribution Shift, 2023):** more machinery than three classes need.
+- **Bayesian paired comparison:** sound, but bootstrap is already in the code and easier to explain to Alex.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+- Heads-up: arxiv.org was not reachable from today's session, so the paired-bootstrap preprint was read from search summaries only.
+
+### Sources
+- When +1% Is Not Enough: A Paired Bootstrap Protocol for Evaluating Small Improvements: https://arxiv.org/pdf/2511.19794
+- Don't Use the CLT in Evals With Fewer Than a Few Hundred Datapoints: https://arxiv.org/pdf/2503.01747
+- Look Around and Learn (ECCV 2024): https://arxiv.org/html/2302.03566v4
+- Move to See Better: Self-Improving Embodied Object Detection: https://cs.paperswithcode.com/paper/move-to-see-better-towards-self-supervised
+- Predicting Class Distribution Shift for Reliable Domain Adaptive Detection: https://arxiv.org/pdf/2302.06039
+- Pseudo-rehearsal (mix old-model outputs into fine-tuning): https://explosion.ai/blog/pseudo-rehearsal-catastrophic-forgetting
+- Dual-path incremental object detection (stability vs plasticity): https://arxiv.org/html/2504.10214v1
+- Towards Open World Object Detection (exemplar replay): https://arxiv.org/pdf/2103.02603
+- Depth Anything V2 metric indoor small: https://huggingface.co/kerasformers/depth_anything_v2_metric_indoor_small
+- RF-DETR small-object fine-tunes (community model cards): https://huggingface.co/dronefreak/visdrone-rfdetr-nano
+
 ## 2026-10-29
 
 **Summary.** Started from PR #32 (newest open branch; it includes #25 to #31, so merging it is enough). Searched for video-box propagation
