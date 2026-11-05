@@ -23,6 +23,9 @@ OWL_MODEL = "google/owlv2-base-patch16-ensemble"
 PROMPTS = {"water_bottle": "a water bottle", "keys": "a bunch of keys", "shoes": "a shoe"}
 THRESHOLD = 0.3
 NMS_IOU = 0.5
+EXTRA = "owlv2-extra"  # `by` of a box added to a photo that already had boxes (task 23c)
+FILL_THRESHOLD = 0.4
+FILL_IOU = 0.3
 REJECTED = "rejected"  # looked at, nothing confident found: not used for training
 COLOURS = {"water_bottle": "#1f77b4", "keys": "#d62728", "shoes": "#2ca02c"}
 
@@ -124,12 +127,61 @@ def autobox_all(root, detect, threshold=THRESHOLD, log=print):
     return out
 
 
+def fill_missing(folder, detect, threshold=FILL_THRESHOLD, max_iou=FILL_IOU, log=print):
+    """Add boxes for objects a photo has no box for yet (task 23c).
+
+    Open Images only boxes the one object a photo was picked for, so a photo of
+    a bottle with shoes in the background teaches the detector that those shoes
+    are "nothing". Run OWLv2 with all three prompts and append a box
+    (`"by": "owlv2-extra"`) only for a class the photo does not already have,
+    with score >= `threshold` and IoU < `max_iou` against every existing box.
+    Existing boxes (human or OWLv2) are never touched. Photos that are pending
+    or rejected are skipped; each photo is checked once (`"filled": true`).
+    Returns {"photos": n, "added": n}.
+    """
+    folder = Path(folder)
+    data = load_boxes(folder)
+    stats = {"photos": 0, "added": 0}
+    for name, entry in sorted(data.items()):
+        if entry["by"] in ("pending", REJECTED) or entry.get("filled") or not (folder / name).exists():
+            continue
+        with Image.open(folder / name) as im:
+            found = detect(im.convert("RGB"), list(OBJECT_NAMES))
+        have = {b["label"] for b in entry["boxes"]}
+        existing = [b["box"] for b in entry["boxes"]]
+        added = []
+        for label, score, box in nms([f for f in found if f[1] >= threshold]):
+            if label in have or any(iou(box, e) >= max_iou for e in existing + [a["box"] for a in added]):
+                continue
+            added.append({"label": label, "box": [round(v, 4) for v in box],
+                          "score": round(score, 3), "by": EXTRA})
+        entry["boxes"] = entry["boxes"] + added
+        entry["filled"] = True
+        stats["photos"] += bool(added)
+        stats["added"] += len(added)
+    save_boxes(folder, data)
+    log(f"{folder.parent.name}/{folder.name}: added {stats['added']} missing boxes to {stats['photos']} photos")
+    return stats
+
+
+def fill_all(root, detect, threshold=FILL_THRESHOLD, log=print):
+    """`fill_missing` on every web/own folder, including human-boxed ones."""
+    out = {}
+    for source in SOURCES:
+        for folder in FOLDERS:
+            d = Path(root) / source / folder
+            if d.is_dir():
+                out[f"{source}/{folder}"] = fill_missing(d, detect, threshold, log=log)
+    return out
+
+
 def contact_sheet(folder, out=None, n=24, cols=6, thumb=200, only_by=("owlv2",), seed=0):
     """Grid of photos with their boxes drawn, for a quick human look. Returns the image."""
     import random
     folder = Path(folder)
     items = [(k, v) for k, v in sorted(load_boxes(folder).items())
-             if v["by"] in only_by and (folder / k).exists()]
+             if (v["by"] in only_by or any(b.get("by") == EXTRA for b in v["boxes"]))
+             and (folder / k).exists()]
     random.Random(seed).shuffle(items)
     items = items[:n]
     rows = max(1, -(-len(items) // cols))
@@ -156,6 +208,9 @@ def main(argv=None):
     r = sub.add_parser("run", help="auto-box all pending photos (needs transformers; Colab)")
     r.add_argument("root", nargs="?", default="data/detection")
     r.add_argument("--threshold", type=float, default=THRESHOLD)
+    f = sub.add_parser("fill", help="add boxes for objects a photo has no box for (needs transformers; Colab)")
+    f.add_argument("root", nargs="?", default="data/detection")
+    f.add_argument("--threshold", type=float, default=FILL_THRESHOLD)
     s = sub.add_parser("sheet", help="contact sheet of one folder's auto-boxes")
     s.add_argument("folder")
     s.add_argument("--out", default="contact_sheet.jpg")
@@ -163,6 +218,8 @@ def main(argv=None):
     a = p.parse_args(argv)
     if a.cmd == "run":
         autobox_all(a.root, owl_detector(), a.threshold)
+    elif a.cmd == "fill":
+        fill_all(a.root, owl_detector(), a.threshold)
     else:
         contact_sheet(a.folder, a.out, a.n)
         print(f"saved {a.out}")
