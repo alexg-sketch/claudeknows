@@ -27,6 +27,14 @@ is contained in the branch.
 - When you're happy with the checked footage, run the gold build once. Until a gold set exists the
   Phase 2 loop can't judge new models.
 
+**Review notes (2026-11-06, Cowork Claude)**
+- Fixed: a gold video's OTHER frames could still be trained on (only the exact frozen
+  frames were excluded, and frames are re-extracted each Colab session so bytes may
+  differ). `is_gold` now keeps the whole video/photo out. Test added.
+- Not fixed here, added as task 25b: the gold manifest lives on Colab's temporary disk
+  (lost every session), and "checked" currently means OWLv2's machine boxes, not Alex's.
+  The gold set is not used by any notebook yet, so nothing is affected today.
+
 ## 2026-11-04
 **This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32, #33, #34 and #35.** Merging this one is enough; the others will close automatically. (Branch started from #35, which already contained all the others; `main` is contained in it.)
 

@@ -101,8 +101,19 @@ def gold_samples(manifest, root="data/detection"):
     return out
 
 
+def gold_groups(manifest):
+    """(source, group) of every gold image. For Alex's footage a group is one video or
+    photo: frames of the same video are near-copies, so a whole gold video stays out
+    of training, not just the frames that were frozen."""
+    return {(e["source"], e["group"]) for e in manifest["images"]}
+
+
 def is_gold(sample, manifest):
-    """True if the sample's file is a gold image: same bytes, whatever it is called."""
+    """True if the sample is a gold image (same bytes, whatever it is called) or comes
+    from the same video/photo as one (frames are re-extracted each Colab session, so
+    their bytes may differ, and neighbouring frames of a gold video are near-copies)."""
+    if (sample.source, sample.group) in gold_groups(manifest):
+        return True
     return file_hash(sample.path) in gold_hashes(manifest)
 
 

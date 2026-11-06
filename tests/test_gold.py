@@ -61,3 +61,21 @@ def test_gold_samples_round_trip(tmp_path):
     back = gold.gold_samples(m, root)
     assert [b.boxes for b in back] == [s.boxes for s in samples]
     assert [b.path.resolve() for b in back] == [s.path.resolve() for s in samples]
+
+
+def test_whole_gold_video_stays_out_of_training(tmp_path):
+    root = tmp_path / "det"
+    d = root / "own" / "keys"
+    d.mkdir(parents=True)
+    data = {}
+    for f in range(3):  # three frames of ONE video, different bytes
+        Image.new("RGB", (160, 120), (10 + 50 * f, 30, 30)).save(d / f"vid_kitchen__f{f}.jpg")
+        data[f"vid_kitchen__f{f}.jpg"] = {"by": "owlv2", "boxes": [{"label": "keys", "box": [0.2, 0.2, 0.6, 0.7]}]}
+    dd.save_boxes(d, data)
+    samples = dd.scan_detection(root)[0]
+    assert len({s.group for s in samples}) == 1
+    m = gold.build_gold(samples[:1], root, log=lambda *_: None)
+    # the other two frames are not byte-identical, but come from the gold video
+    assert gold.remove_gold(samples, m, log=lambda *_: None) == []
+    with pytest.raises(gold.GoldLeak):
+        gold.assert_no_gold(samples[1:], m)
