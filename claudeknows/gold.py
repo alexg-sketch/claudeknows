@@ -101,15 +101,9 @@ def gold_samples(manifest, root="data/detection"):
     return out
 
 
-def is_gold(sample, manifest, _cache={}):
-    """True if the sample's file is a gold image (same path, or the same bytes elsewhere)."""
-    key = id(manifest)
-    if key not in _cache or _cache[key][0] is not manifest:
-        _cache[key] = (manifest, {Path(e["path"]).name for e in manifest["images"]
-                                  + manifest.get("distance", [])}, gold_hashes(manifest))
-    _, names, hashes = _cache[key]
-    p = Path(sample.path)
-    return p.name in names and file_hash(p) in hashes
+def is_gold(sample, manifest):
+    """True if the sample's file is a gold image: same bytes, whatever it is called."""
+    return file_hash(sample.path) in gold_hashes(manifest)
 
 
 def remove_gold(samples, manifest, log=print):
