@@ -1,5 +1,32 @@
 # Progress log
 
+## 2026-11-06
+**This includes everything from PRs #25-#38** (all open `claude/*` PRs, including research PRs #37 and #38).
+Merging this one is enough; the others will close automatically. The merges had no conflicts and `main`
+is contained in the branch.
+
+**Done** (roadmap task 25, the "gold" test set)
+- New `claudeknows/gold.py`. The gold set is a fixed list of Alex's own checked photos/frames. Each file
+  is stamped with a fingerprint (SHA-256), and the list is saved once to `data/detection/gold.json`
+  (git-ignored, so Alex's footage is never committed).
+  - `python -m claudeknows.gold build` freezes it (own footage only, up to 60 per folder, plus the
+    `distance/` photos). It refuses to overwrite an existing gold set unless `--force`.
+  - `python -m claudeknows.gold check` says if any gold file went missing or changed.
+  - Training can't touch it: `detector train` removes gold images from the pool before splitting, and
+    `train_detector(..., gold=manifest)` stops with an error if any gold image (even a renamed copy)
+    is in the training data.
+  - `detector report` now also prints a "GOLD SET" section (with score ranges) after the normal test report.
+- Tests in `tests/test_gold.py`. Nothing needs a GPU.
+
+**Next**
+- Task 26 (auto-labelling walk frames, with the review batch), then 27-29.
+- Build the gold set only after Alex has looked at the footage boxes (contact sheets); until then no
+  gold file exists and everything works as before.
+
+**For Alex to decide**
+- When you're happy with the checked footage, run the gold build once. Until a gold set exists the
+  Phase 2 loop can't judge new models.
+
 ## 2026-11-04
 **This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32, #33, #34 and #35.** Merging this one is enough; the others will close automatically. (Branch started from #35, which already contained all the others; `main` is contained in it.)
 

@@ -176,7 +176,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                    max_batches=None, device=None, log=print, seed=0, val_samples=None,
                    patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
                    rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15,
-                   zoom_crop_p=0.0, ema_decay=0.0, resume_path=None, workers=0):
+                   zoom_crop_p=0.0, ema_decay=0.0, resume_path=None, workers=0,
+                   gold=None):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -196,7 +197,12 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     the next epoch (random draws are restored too, but with `workers` > 0 the photo order may
     differ from an unbroken run). The file is removed when training ends normally.
     `workers` loads photos in that many extra processes (0 = in the training process).
+    `gold`: a manifest from `gold.load_gold`; training refuses (GoldLeak) if any gold image is in
+    the training, validation or background photos.
     """
+    if gold:
+        from .gold import assert_no_gold
+        assert_no_gold(list(train_samples) + list(val_samples or []) + list(negatives or []), gold)
     torch.manual_seed(seed)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     lr = 0.005 * batch_size / 8 if lr is None else lr
@@ -730,6 +736,10 @@ def main(argv=None):
                    help="test-time augmentation: flip = mirror + 1.3x, tiles = also 4 zoomed tiles")
     a = p.parse_args(argv)
     samples, pending = scan_detection(a.root)
+    from .gold import gold_samples, load_gold, remove_gold, verify_gold
+    gold = load_gold(a.root)
+    if gold:  # frozen yardstick: out of train AND test pools
+        samples = remove_gold(samples, gold)
     scenes = scene_groups(samples)
     train, test = split_detection(samples, scenes=scenes)
     negs_train, negs_test = split_detection(scan_negatives(a.root))
@@ -744,7 +754,7 @@ def main(argv=None):
                                      negatives=negs_train if a.neg_frac > 0 else None,
                                      neg_frac=a.neg_frac, zoom_crop_p=a.zoom_crop_p,
                                      ema_decay=a.ema_decay, resume_path=a.resume,
-                                     workers=a.workers)
+                                     workers=a.workers, gold=gold)
         cuts = best_thresholds(model, val) if val else {}
         if cuts:
             print(format_cutoffs(cutoff_table(predict_samples(model, val, 0.05), cuts=cuts)))
@@ -765,6 +775,12 @@ def main(argv=None):
             plain = predict_samples(model, test)
             print(f"\nwithout --tta {a.tta}:")
             print(format_report(build_report(plain, classes), bootstrap_ci(plain, classes)))
+        if gold:
+            for prob in verify_gold(gold, a.root):
+                print("WARNING gold set", prob)
+            gres = predict_samples(model, gold_samples(gold, a.root), tta=a.tta)
+            print(f"\nGOLD SET (frozen {gold['created']}, {len(gres)} images, never trained on):")
+            print(format_report(build_report(gres, classes), bootstrap_ci(gres, classes)))
         print(f"\n(distance photos, used in task 21: {len(load_distance_photos(a.root))})")
 
 
