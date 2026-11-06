@@ -1,5 +1,113 @@
 # Progress log
 
+## 2026-11-06
+**This includes everything from PRs #25-#38** (all open `claude/*` PRs, including research PRs #37 and #38).
+Merging this one is enough; the others will close automatically. The merges had no conflicts and `main`
+is contained in the branch.
+
+**Done** (roadmap task 25, the "gold" test set)
+- New `claudeknows/gold.py`. The gold set is a fixed list of Alex's own checked photos/frames. Each file
+  is stamped with a fingerprint (SHA-256), and the list is saved once to `data/detection/gold.json`
+  (git-ignored, so Alex's footage is never committed).
+  - `python -m claudeknows.gold build` freezes it (own footage only, up to 60 per folder, plus the
+    `distance/` photos). It refuses to overwrite an existing gold set unless `--force`.
+  - `python -m claudeknows.gold check` says if any gold file went missing or changed.
+  - Training can't touch it: `detector train` removes gold images from the pool before splitting, and
+    `train_detector(..., gold=manifest)` stops with an error if any gold image (even a renamed copy)
+    is in the training data.
+  - `detector report` now also prints a "GOLD SET" section (with score ranges) after the normal test report.
+- Tests in `tests/test_gold.py`. Nothing needs a GPU.
+
+**Next**
+- Task 26 (auto-labelling walk frames, with the review batch), then 27-29.
+- Build the gold set only after Alex has looked at the footage boxes (contact sheets); until then no
+  gold file exists and everything works as before.
+
+**For Alex to decide**
+- When you're happy with the checked footage, run the gold build once. Until a gold set exists the
+  Phase 2 loop can't judge new models.
+
+## 2026-11-04
+**This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32, #33, #34 and #35.** Merging this one is enough; the others will close automatically. (Branch started from #35, which already contained all the others; `main` is contained in it.)
+
+**Done** (roadmap task 24, first step of Phase 2)
+- Walk import (`claudeknows/walks.py`, `python -m claudeknows.walks <walks folder> <output folder>`): takes every NEW video in `claudeknows_photos/walks/`, turns it into frames (same ~2 per second, blurry ones skipped, iPhone .MOV supported, via the existing frame code), then throws away near-identical frames (e.g. while you stood still) using a "perceptual hash" (a tiny fingerprint of how a picture looks). A `manifest.json` remembers each processed video by its content, so running it again only handles new videos, even if you rename one. A missing or empty `walks/` folder just does nothing.
+- 3 new tests (fingerprint similar vs different, duplicate dropping, "processed once"). Footage stays private: nothing is committed.
+
+**Next**
+- Task 25 (gold test set), then 26-29.
+
+**For Alex to decide**
+- Nothing blocking. The notebook for walks comes with task 28.
+- Branch note: today's work is on `claude/practical-babbage-9xejcc` rather than `claude/2026-11-04` (the session was assigned this branch).
+
+## 2026-11-02
+**This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32, #33 and #34.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
+
+**Done** (roadmap tasks 23l and 23m)
+- 23l - better metres from two guesses: the distance shown is now a blend of the depth model and the object-size estimate in "log space" (default 50/50 = geometric mean, so 1 m and 4 m give 2 m; the constant is `BLEND_W`). The distance check on your tape-measured photos also scores that mix and fits the best blend weight leave-one-out, and tells you plainly when there are fewer than 10 photos (too noisy, keep 0.5). New: when one photo shows 2+ bottles/shoes, the depth model's scale is corrected from them and applied to everything in that photo, so keys get a better number too (flagged `calibrated_by_photo`). Near/far order is untouched.
+- 23m - separate score cut-offs per object: OWLv2 auto-boxing now has a cut-off per object (all still at today's 0.3 / 0.4, so nothing changes until we lower keys). After training, the detector picks a cut-off per object on the validation photos (best balance of missed vs. false boxes; objects with fewer than 20 validation boxes keep 0.5), saves it in the model file, and `detect` uses it automatically. The report prints cut-off, precision and recall per object. Older model files still load and use 0.5.
+- 98 tests pass (6 new). The zoom/Colab-only parts (real depth models, real training) still need your first real run.
+
+**Next**
+- Phase 2 (tasks 24-29) is next; Everything else still waits for your first real spatial-notebook run.
+
+**For Alex to decide**
+- Nothing blocking. Once the first real run exists, tell me if keys boxes look lost on the contact sheet and I'll lower the keys cut-off.
+- Authorship check: all commits on main and on this branch are by Claude or Alex.
+
+## 2026-10-30
+**This includes everything from PRs #25, #26, #27, #28, #29, #30, #31, #32 and #33.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
+
+**Done** (roadmap tasks 23n and 23o)
+- 23n - training that survives a Colab disconnect: after every round the whole training state is saved to a file (written safely, then renamed). If you press "Run all" again after a disconnect, training continues from the last finished round instead of starting over. If the settings changed, it says so and starts fresh; the file is deleted when training finishes. The spatial notebook now keeps this file in Drive `claudeknows_models/resume_detector.pt`. Option: `--resume PATH`. Test: 2 rounds + resume + 2 rounds gives the same weights as 4 straight.
+- 23o - faster photo loading: `--workers` (default 2) loads photos in extra processes so the GPU waits less. Each worker gets its own random draws (otherwise the random zooms/pastes would repeat). The notebook prints how long training took, so you can compare with `--workers 0`. Test covers both.
+- 92 tests pass (4 new).
+
+**Next**
+- 23l (better metres from two guesses), 23m (per-object score cut-offs), then Phase 2.
+
+**For Alex to decide**
+- Nothing blocking.
+- Authorship check: all commits on main and on this branch are by Claude or Alex (GitHub web-merge committer only for Alex's merges).
+
+## 2026-10-28
+**This includes everything from PRs #25, #26, #27, #28, #29, #30 and #31.** Merging this one is enough; the others will close automatically. (`main` is contained in it; no conflicts.)
+
+**Done** (roadmap tasks 23j and 23k)
+- 23j - zoomed-window training: new option `--zoom-crop-p` (default 0 = off). With that chance, a training photo is cut down to a window 50-70% of its size that fully contains at least one object, then scaled back up, so objects look in training like they do inside a zoomed tile at test time (`--tta tiles`). Boxes that stay at least 60% inside are kept and clipped. Test: a box inside the window keeps exact shifted coordinates.
+- 23k - averaged weights: new option `--ema-decay` (default 0 = off; try 0.995). The training keeps a smoothed average of the weights; that average is what gets scored each round, kept as "best" and saved. Test: decay 0 changes nothing, with 0.9 the weights differ from the plain ones.
+- 88 tests pass (4 new). Both are off by default. The "does it help" comparison (`--zoom-crop-p` 0 / 0.25, `--ema-decay` 0 / 0.995, judged with `compare_runs`) needs real training in Colab, so it waits for your first real run.
+
+**Next**
+- 23l (better metres) and 23m (per-object score cut-offs), then Phase 2.
+
+**For Alex to decide**
+- Nothing blocking.
+- Authorship check: all commits on main and on this branch are by Claude or Alex.
+
+## 2026-10-26
+**This includes everything from PRs #25, #26, #27, #28 and #29.** Merging this one is enough; the others will close automatically. (`main` is contained in it.)
+
+**Done** (roadmap tasks 23d and 23h)
+- 23d - "nothing here" photos: the downloader now also fetches ~120 Open Images photos that people checked contain no bottle, key, keychain or shoe (`python -m claudeknows.detection_data download --negatives 120`; credited in CREDITS.md). Your own `claudeknows_photos/empty/` folder (optional) is picked up too. Training mixes in a fresh random pick of them each round, at most 15% of the photos (`--neg-frac`, 0 turns it off). These photos are never counted as test "positives". The report now has a line "false alarms per background-only photo (score 0.5)" next to the scores. Fixed along the way: tilting/turning a photo with no boxes crashed the augmentation.
+- 23h - same-room videos stay together: `scene_groups` merges videos with a similar background (average small thumbnail); the train/test split keeps each scene wholly on one side so two videos of one room can't flatter the scores. It prints which videos were merged; if everything looks like one scene it falls back to the by-video split and says so. The report shows how many different scenes the own-footage test set has.
+- 84 tests pass (6 new).
+
+**Next**
+- 23j (zoomed-window training), 23k (averaged weights), 23l (better metres), then Phase 2. All still wait for your first real spatial-notebook run for tuning.
+
+**For Alex to decide**
+- Nothing blocking. The scene-matching sensitivity (0.08) is a guess; if the printout shows videos from different rooms merged (or the same room not merged), tell me.
+- Authorship check: all commits by Claude or Alex (checked below in the PR).
+
+**Fix after review (2026-10-26, Cowork Claude)**
+- The background-only photo finder required all five target labels to be checked absent on
+  one photo. No Open Images photo has that (at most four), so it found **0** photos. It now
+  takes photos with no target present and at least one checked absent, best-checked first
+  (most labels checked, then shoe/footwear checked). Real run: 110,725 candidates, 12 of 12
+  sampled photos downloaded and looked object-free.
+
 ## 2026-10-21 (evening, with Alex)
 - Alex merged everything up to PR #21; `main` is up to date and all tests pass.
 - **Alex's decision on task 23 (web page): option (a).** Done:
@@ -43,7 +151,7 @@ conflicts, and `main` is contained in it.)
 **For Alex to decide**
 - Task 23 (web page): OK for it to be a simple "how to try it" page linking to the Colab
   notebook (my suggestion), or do you want an in-browser version (much more work)?
-- Authorship check: see the PR description.
+- Authorship check: all commits on main and on this branch are by Claude or Alex.
 
 ## 2026-10-19
 **This run builds on the open PR #14** (which itself includes #12 and the research PR #13), so
@@ -422,3 +530,31 @@ and the Colab notebook.
   horse, ship, truck). If you have a real use case in mind (e.g. "animal ->
   alert, vehicle -> log"), add it under "Notes from Alex" in `ROADMAP.md`.
   Otherwise I'll use a simple placeholder mapping.
+
+## 2026-10-23
+**Done** (tasks 23c and 23g; this PR also carries PR #25 and PR #26 - merging this one is enough)
+- Task 23c - `python -m claudeknows.autobox fill data/detection`: for photos that already have boxes
+  (including Open Images ones), look for the OTHER objects with OWLv2 and add a box (marked
+  `owlv2-extra`) only if that object has no box yet, is >= 0.4 confident and does not overlap an
+  existing box. Existing boxes are never changed; each photo is checked once. Reason: a bottle photo
+  with shoes in the background used to teach the detector that those shoes are "nothing". The
+  spatial Colab notebook now runs it right after auto-boxing; contact sheets show the added boxes.
+- Task 23g - `detect_tta` in `detector.py` and `python -m claudeknows.detector report --tta flip|tiles`.
+  `flip` = photo + mirrored + 1.3x bigger; `tiles` also runs four zoomed-in tiles to catch far-away
+  (small) objects. Results are merged with `ensemble-boxes` (added to requirements.txt). The report
+  prints the scores with and without it, with the usual confidence ranges. Off by default.
+- 5 new tests (fill rules, tiles find a small object at the right place, mirror is exact); 80 pass.
+
+**Next**
+- 23d (background-only photos), 23h (scene-aware split), 23j (zoomed-window training).
+
+**Notes**
+- Tiles use "max" instead of "average" scores in the merge: otherwise an object seen by one tile
+  only would be averaged down below the 0.5 cut-off.
+- Whether to KEEP TTA/tiles needs a real trained detector: run the report with and without and
+  look at the far-bin numbers.
+
+**For Alex to decide**
+- Nothing blocking. When you next run the spatial notebook, it will also run the new "fill" step.
+  Authorship check: every commit on main and on this branch is by Claude or Alex (GitHub web-merges
+  by "GitHub"), so running the notebook is fine.

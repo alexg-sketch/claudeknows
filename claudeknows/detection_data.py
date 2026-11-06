@@ -25,7 +25,7 @@ skipped for training and counted in the report.
 import argparse
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch
@@ -36,11 +36,12 @@ from . import openimages
 from .frames import PHOTO_EXTS
 from .objects import OBJECT_NAMES, _group_of, import_own, split_by_group
 
-DETECT_SIDE = 640  # whole photos are kept bigger than classifier crops: far objects are small
+DETECT_SIDE = 960  # whole photos are kept bigger than classifier crops: far objects are small
 MIN_BOX_SIDE = 0.03  # ignore Open Images boxes thinner than 3% of the photo
 TOGETHER = "together"
 DISTANCE = "distance"
 FOLDERS = OBJECT_NAMES + (TOGETHER,)  # folders that can hold training images
+NEGATIVE = "empty"  # background-only photos: no boxes, taught as "nothing here"
 SOURCES = ("web", "own")
 BOXES_FILE = "boxes.json"
 DISTANCES_FILE = "distances.json"
@@ -59,8 +60,10 @@ def save_boxes(folder, data):
     (Path(folder) / BOXES_FILE).write_text(json.dumps(data, indent=0, sort_keys=True))
 
 
-def register_pending(folder):
+def register_pending(folder, by="pending"):
     """Add every image in `folder` that has no entry yet as "pending" (to be auto-boxed).
+
+    `by="negative"` instead registers background-only photos (no boxes, nothing to find).
 
     Returns the number of newly registered images.
     """
@@ -69,7 +72,7 @@ def register_pending(folder):
     new = 0
     for f in sorted(folder.glob("*.jpg")):
         if f.name not in data:
-            data[f.name] = {"boxes": [], "by": "pending"}
+            data[f.name] = {"boxes": [], "by": by}
             new += 1
     if new or (folder.is_dir() and not (folder / BOXES_FILE).exists()):
         save_boxes(folder, data)
@@ -126,19 +129,25 @@ def download_object(name, candidates, out_dir, cap, image_url=openimages.IMAGE_U
         new.pop(extra, None)
     saved = saved[:cap]
     for i, boxes in new.items():
-        if boxes:
+        if name == NEGATIVE:
+            data[f"{i}.jpg"] = {"by": "negative", "boxes": []}
+        elif boxes:
             data[f"{i}.jpg"] = {"by": "openimages", "boxes": [
                 {"label": name, "box": [x0, y0, x1, y1]} for x0, x1, y0, y1 in boxes]}
         else:
             data[f"{i}.jpg"] = {"by": "pending", "boxes": []}
     save_boxes(out_dir, data)
     n_boxed = sum(1 for v in data.values() if v["by"] == "openimages")
+    if name == NEGATIVE:
+        log(f"{name}: {len(saved)} background-only photos")
+        return saved
     log(f"{name}: {len(saved)} whole photos, {n_boxed} with Open Images boxes "
         f"({len(saved) - n_boxed} waiting for auto-boxing)")
     return saved
 
 
-def download_all(out="data/detection", cap=300, objects=None, credits=True, log=print):
+def download_all(out="data/detection", cap=300, objects=None, credits=True, log=print,
+                 negatives=0):
     objects = {k: openimages.OBJECTS[k] for k in (objects or openimages.OBJECTS)}
     web = Path(out) / "web"
     web.mkdir(parents=True, exist_ok=True)
@@ -153,9 +162,23 @@ def download_all(out="data/detection", cap=300, objects=None, credits=True, log=
         cands = {o: {i: (b or []) for i, b in v.items()} for o, v in cands.items()}
         cache.write_text(json.dumps(cands))
     saved = {o: download_object(o, cands[o], web / o, cap, log=log) for o in objects}
+    if negatives:
+        saved[NEGATIVE] = download_negatives(out, negatives, log=log)
     if credits:
         openimages.write_credits(web, saved)
     return saved
+
+
+def download_negatives(out="data/detection", cap=120, log=print):
+    """~100-150 background-only Open Images photos into web/empty/ (task 23d)."""
+    web = Path(out) / "web"
+    cache = web / "_negatives.json"
+    web.mkdir(parents=True, exist_ok=True)
+    ids = json.loads(cache.read_text()) if cache.exists() else None
+    if ids is None:
+        ids = openimages.find_negatives(cap, log=log)
+        cache.write_text(json.dumps(ids))
+    return download_object(NEGATIVE, {i: [] for i in ids}, web / NEGATIVE, cap, log=log)
 
 
 # ---------------------------------------------------------- Alex's footage
@@ -207,12 +230,12 @@ def import_own_detection(drive_dir, root="data/detection", fps=2.0, backend="aut
     Missing or empty folders are fine. Frames are kept at 640 px. Everything
     new is "pending" until auto-boxed. Returns a summary dict per folder.
     """
-    summary = import_own(drive_dir, root, FOLDERS, fps=fps, backend=backend, log=log,
-                         max_side=DETECT_SIDE)
-    for name in FOLDERS:
+    summary = import_own(drive_dir, root, FOLDERS + (NEGATIVE,), fps=fps, backend=backend,
+                         log=log, max_side=DETECT_SIDE)
+    for name in FOLDERS + (NEGATIVE,):
         folder = Path(root) / "own" / name
         if folder.is_dir():
-            register_pending(folder)
+            register_pending(folder, "negative" if name == NEGATIVE else "pending")
     summary[DISTANCE] = import_distance(drive_dir, root, log=log)
     return summary
 
@@ -256,8 +279,97 @@ def scan_detection(root="data/detection", boxed_only=True):
     return samples, pending
 
 
-def split_detection(samples, test_frac=0.2, seed=0):
-    """Train/test split by video/photo, never by frame (same rule as the classifier)."""
+def scan_negatives(root="data/detection"):
+    """Background-only photos (web/empty and own/empty) as box-less samples.
+
+    Kept apart from `scan_detection` so they can never count as test positives.
+    """
+    root = Path(root)
+    out = []
+    for source in SOURCES:
+        d = root / source / NEGATIVE
+        for name, entry in sorted(load_boxes(d).items()):
+            if entry["by"] == "negative" and (d / name).exists():
+                out.append(DetSample(d / name, len(FOLDERS), source, _group_of(d / name),
+                                     NEGATIVE, (), "negative"))
+    return out
+
+
+def _descriptor(paths, n=5):
+    """Mean 16x16 RGB thumbnail (values 0..1) over up to `n` evenly spaced frames."""
+    import numpy as np
+    paths = sorted(paths)
+    picks = [paths[int(i * len(paths) / min(n, len(paths)))] for i in range(min(n, len(paths)))]
+    thumbs = []
+    for p in picks:
+        with Image.open(p) as im:
+            thumbs.append(np.asarray(im.convert("RGB").resize((16, 16), Image.BILINEAR),
+                                     dtype=np.float32) / 255.0)
+    return np.mean(thumbs, axis=0)
+
+
+def scene_groups(samples, threshold=0.08):
+    """Map each of Alex's videos/photos to a scene id; same-looking backgrounds share one.
+
+    Two videos filmed in the same room look alike, so splitting them across train and
+    test would flatter the scores. A video's descriptor is its mean 16x16 thumbnail;
+    videos whose descriptors differ by less than `threshold` (mean absolute difference,
+    0..1) are merged (single linkage). Open Images photos stay one group each.
+    Returns {group: scene id}.
+    """
+    import numpy as np
+    files = {}
+    for s in samples:
+        if s.source == "own":
+            files.setdefault(s.group, []).append(s.path)
+    names = sorted(files)
+    desc = {g: _descriptor(files[g]) for g in names}
+    parent = {g: g for g in names}
+
+    def find(g):
+        while parent[g] != g:
+            parent[g] = parent[parent[g]]
+            g = parent[g]
+        return g
+
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if float(np.abs(desc[a] - desc[b]).mean()) < threshold:
+                parent[find(b)] = find(a)
+    scenes = {g: f"scene_{find(g)}" for g in names}
+    for s in samples:
+        if s.source != "own":
+            scenes[s.group] = s.group
+    return scenes
+
+
+def split_detection(samples, test_frac=0.2, seed=0, scenes=None, log=print):
+    """Train/test split by video/photo, never by frame (same rule as the classifier).
+
+    With `scenes` (from `scene_groups`) every scene sits wholly on one side, so two
+    videos of the same room are never one in train and one in test. If all of Alex's
+    videos merge into a single scene that cannot be done, so it falls back to the
+    plain by-video split and says so.
+    """
+    if scenes:
+        own = {scenes[s.group] for s in samples if s.source == "own"}
+        n_videos = len({s.group for s in samples if s.source == "own"})
+        if len(own) < 2 and n_videos > 1:
+            log("all of your videos look like ONE scene: splitting by video instead")
+        else:
+            for scene in sorted(own):
+                members = sorted(g for g, sc in scenes.items() if sc == scene and g != scene)
+                if len(members) > 1:
+                    log(f"{scene}: {', '.join(members)}")
+            # a scene is one unit (labelled by its first sample's folder) so it can't straddle the split
+            first = {}
+            for s in samples:
+                first.setdefault(scenes[s.group], s.label)
+            moved = [replace(s, group=scenes[s.group], label=first[scenes[s.group]])
+                     if s.source == "own" else s for s in samples]
+            by_path = {s.path: s for s in samples}
+            train, test = split_by_group(moved, test_frac, seed)
+            return [by_path[s.path] for s in train], [by_path[s.path] for s in test]
     return split_by_group(samples, test_frac, seed)
 
 
@@ -341,6 +453,8 @@ def main(argv=None):
     d.add_argument("--cap", type=int, default=300, help="max photos per object")
     d.add_argument("--objects", nargs="+", choices=list(openimages.OBJECTS), default=None)
     d.add_argument("--no-credits", action="store_true")
+    d.add_argument("--negatives", type=int, default=120,
+                   help="background-only photos with none of the objects (0 = skip)")
     i = sub.add_parser("import", help="Alex's footage: objects/, together/, distance/")
     i.add_argument("drive_dir", help="folder such as claudeknows_photos/")
     i.add_argument("--root", default="data/detection")
@@ -349,7 +463,7 @@ def main(argv=None):
     s.add_argument("--root", default="data/detection")
     a = p.parse_args(argv)
     if a.cmd == "download":
-        download_all(a.out, a.cap, a.objects, credits=not a.no_credits)
+        download_all(a.out, a.cap, a.objects, credits=not a.no_credits, negatives=a.negatives)
     elif a.cmd == "import":
         import_own_detection(a.drive_dir, a.root, a.fps)
     else:
