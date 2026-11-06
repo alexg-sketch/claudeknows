@@ -3,6 +3,60 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-06
+
+**Summary.** Started from PR #37 (newest open research branch; it includes #25 to #36, so merging it is enough). Tasks 25-29 (the robot
+learning loop) are the next code to be written, so I searched for ways to make the loop's labels safer and its retraining decisions less
+wasteful. Two small, library-free additions are worth writing into the plan: (1) when choosing which frames to show Alex in the review batch, rank
+by how much the current detector disagrees with the proposed label, so his 20 questions go where mistakes are likeliest; (2) skip a retrain
+when the walk added too little new, agreed data. Depth Anything 3 has a metric checkpoint, but only a Large one, and no Small metric model, so
+our Depth Anything V2 Small choice is unchanged. arxiv.org was not reachable from this session, so the papers below were read from search
+summaries only (provisional).
+
+### Recommendations
+
+**1. Rank the review batch by "loss disagreement" (refines task 26; small effort, low risk).**
+- What: Schubert et al. (WACV 2024) found wrong or missing labels in detection datasets by summing the detector's classification and box
+  losses against the given labels and sorting images by it; this beat score-based and entropy baselines (precision up to 71.5% on common
+  benchmarks, per the search summary). ObjectLab (2024) does a similar per-image label-quality score. Both need an already-trained detector,
+  which we have in the loop (the current model).
+- How: in task 26, after the agreement test, for every candidate frame run the current detector in eval mode with the proposed boxes as targets
+  (torchvision detectors return the loss dict only in train mode, so compute it with `model.train()` under `torch.no_grad()` and BatchNorm kept
+  frozen, which our detector already does for small batches) and store `loss_classifier + loss_box_reg`. Use it only for ordering: when more
+  than 20 frames need review, show the highest-loss ones first; frames in the review batch carry the number so the summary can say "ordered by
+  how much the model disagrees". Do not auto-delete anything on this number.
+- Acceptance: test with a tiny `weights=None` model: a frame whose box is moved far off the object scores a higher loss than the same
+  frame with the right box; the review list is sorted by it and capped at 20.
+- Expected gain: Alex's few answers catch more real mistakes. Effort ~30 lines. Risk: a barely trained model gives noisy losses; sorting is the
+  only use, so the worst case is the same as random order. Licence: none (own code).
+
+**2. Skip retraining when the walk added too little (refines task 28; tiny effort, no risk).**
+- What: continual-adaptation work (AMROD 2024; selective-adaptation work 2023) stresses not updating the model on every batch, because each
+  update on weak pseudo-labels can accumulate errors. Our loop retrains from scratch each time and could burn Colab time for nothing.
+- How: in task 28, before training count new training-approved boxes per object from this walk (after rules in 26). If fewer than 30 new boxes
+  in total, or fewer than 10 for any object the walk was meant to cover (config constants), do not retrain: write "not enough new data (N boxes);
+  kept current model" in the summary. Those frames stay in the pool for the next walk.
+- Acceptance: test with fake counts: 29 boxes -> no retrain and the message says why; 30 -> retrain.
+- Expected gain: saves quota and avoids lucky-noise promotions. Licence: none.
+
+### Considered but not recommended
+- **Depth Anything 3 (ByteDance):** metric checkpoint exists but is Large only (Apache 2.0 per a model card, capped at 20 m indoor, needs focal length); Small is relative only. Large is 3-4x the size and gains nothing we can verify; stays with V2 Small. Licences differ per checkpoint, so check each model card first. Open since 10-19.
+- **Adaptive per-batch confidence thresholds (AMROD, mean-teacher):** needs an online teacher-student loop; our offline gate (27) is simpler and easier to explain.
+- **Drift estimation of live mAP on a sliding window (2020 robot paper):** needs labels we do not have live; the gold set in 25 and the drift report in 29 cover it.
+- **REC-D crowd-sourced label correction:** designed for large benchmarks; the paper itself says the best methods still miss up to 66% of errors.
+
+### For Alex to decide
+- Nothing new. Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 vs V2 Small (10-19).
+- Heads-up: arxiv.org is not in the session's allowed websites, so paper details are from search summaries.
+
+### Sources
+- Identifying Label Errors in Object Detection Datasets by Loss Inspection: https://mlanthology.org/wacv/2024/schubert2024wacv-identifying
+- From Label Error Detection to Correction (REC-D): https://arxiv.org/abs/2508.06556
+- Exploring Test-Time Adaptation for Object Detection in Continually Changing Environments (AMROD): https://arxiv.org/html/2406.16439v5
+- Look Around and Learn: https://arxiv.org/pdf/2302.03566
+- Depth Anything 3 metric large model card: https://huggingface.co/APaul1/DA3METRIC-LARGE
+- Depth estimation model comparison (licences): https://www.ultralytics.com/blog/best-depth-estimation-models
+
 ## 2026-11-05
 
 **Summary.** Started from PR #36 (newest open branch; it includes #25 to #35, so merging it is enough). Tasks up to 24 are now built, so I looked
