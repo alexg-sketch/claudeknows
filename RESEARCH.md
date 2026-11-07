@@ -3,6 +3,46 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-07
+
+**Summary.** Started from PR #39 (newest open branch; it includes #25 to #38, so merging it is enough). Searched for a newer small-data
+detector, SAM 3 as a labeller, detector score calibration, depth scale recovery from known object sizes and fine-tuning recipes. Nothing
+clearly beats the current plan, so **no roadmap change today**. The only new item is SAM 3 (Meta, Nov 2025): a text-prompted detector/segmenter that
+could act as a third labeller in task 26, but it comes under a custom licence, so it is left for Alex to decide. arxiv.org was not reachable
+from this session, so paper details are from search summaries only (provisional).
+
+### Recommendations
+- None today. The plan for tasks 26-28 already carries the useful ideas from 11-05 and 11-06; adding more before any real walk data exists would
+  only add code to maintain.
+
+### Considered but not recommended
+- **SAM 3 as a third labeller / tie-breaker for OWLv2 vs detector disagreements:** it finds every instance of a text-named object. No head-to-head
+  with OWLv2 as a labeller exists (a May 2026 pig-farming paper trained a small YOLO on SAM 3 labels: 79.4% mAP vs 91.7% for human labels, so
+  its labels are good but not human grade). The licence is the custom "SAM License" (Nov 19 2025): not OSI open source; commercial use is not
+  barred, but it has military/weapons and export-control restrictions, must be passed on with any redistribution, and ends if you sue Meta. Also
+  heavier than OWLv2 on a free Colab. Not worth the licence review for a labeller we do not yet know is too weak.
+- **RF-DETR (Nano to Large Apache-2.0; XL and 2XL under a Roboflow platform licence, so avoid those two):** still no controlled small-data test found. Nano gets 67.6 AP50 on COCO at 2.3 ms. Still Alex's model choice (open since 10-16).
+- **Temperature scaling for detector scores:** designed for classifiers; the detector-calibration reviews say it transfers poorly (NMS, background boxes) and a small calibration set makes it unreliable. Our per-object cut-offs (23m) plus the gold set are enough.
+- **Backbone learning-rate multipliers / unfreezing more layers:** no authoritative source for MobileNetV3 Faster R-CNN; the one thesis found says unfreezing helps less on small data. Revisit only if 23a shows underfitting.
+- **Object-size-based scale recovery for depth (2026 thesis, UVic):** same idea as the size-prior estimate already in task 21; the thesis lists the same weaknesses (size priors vary, occlusion). Nothing to add.
+
+### For Alex to decide
+- **SAM 3 as an optional third labeller (low priority, only if the loop's review batches turn out too big):** commercial use appears allowed but under a custom licence with field-of-use limits and a "you must pass the licence on" rule. If you want it, say so and I will plan it as an optional step after task 26 works. Otherwise nothing to do.
+- Still open: RF-DETR / DEIMv2 (10-16) and Depth Anything V3 Small vs V2 Small (10-19).
+
+### Sources
+- SAM 3 paper: https://arxiv.org/pdf/2511.16719
+- SAM License text (facebookresearch/sam3): https://github.com/facebookresearch/sam3/blob/main/LICENSE
+- SAM 3 fine-tuning guide (Roboflow): https://blog.roboflow.com/fine-tune-sam3/
+- SAM3-assisted training of lightweight YOLO (pig farming): https://www.alphaxiv.org/abs/2605.25860
+- OWLv2 labels + per-object co-teaching: https://arxiv.org/pdf/2511.09955
+- RF-DETR docs and licence split: https://rfdetr.roboflow.com/latest/
+- RF-DETR vs alternatives (May 2026): https://roboflow.com/blog/rf-detr-vs-alternatives
+- Review of uncertainty calibration in pretrained detectors: https://arxiv.org/pdf/2210.02935
+- Torchvision Faster R-CNN MobileNetV3 docs: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.detection.fasterrcnn_mobilenet_v3_large_fpn.html
+- Faster R-CNN dataset size and fine-tuning (Tartu thesis): https://dspace.ut.ee/items/0ee00175-ba34-4ae5-8944-b4cee9c8b680/full
+- Any2Full (spatially varying depth scale): https://arxiv.org/pdf/2603.05711
+
 ## 2026-11-06
 
 **Summary.** Started from PR #37 (newest open research branch; it includes #25 to #36, so merging it is enough). Tasks 25-29 (the robot
