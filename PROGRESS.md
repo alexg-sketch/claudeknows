@@ -1,5 +1,21 @@
 # Progress log
 
+## 2026-11-09
+**This includes everything from PRs #25-#40** (all open `claude/*` PRs, including research PRs #37, #38 and #40).
+Merging this one is enough; the others will close automatically. `main` is contained in the branch.
+
+**Done** (roadmap task 25b, making the gold test set really fixed and really checked)
+- **Kept safe in Drive:** `gold copy` logic (`copy_gold`) saves the gold photos plus `gold.json` to a folder you choose (e.g. Drive `claudeknows_models/gold/`) and never overwrites what is already there. `detector train` / `detector report` take `--gold-dir` to read the gold set from that copy, so a new Colab session no longer loses it.
+- **A person must check it:** `python -m claudeknows.gold review` makes one picture of candidate photos with their boxes and file names. You say which ones are right; `gold build --confirm <file names>` (or `--confirm-file`) freezes only those, stamped `by="checked"`. Machine-drawn (OWLv2) boxes are refused.
+- 107 tests pass (2 new). Nothing is committed from your footage.
+
+**Next**
+- Task 26 (auto-labelling walk frames with a review batch), then 27-29.
+
+**For Alex to decide**
+- Nothing blocking. Gold set is still not used by any notebook; it needs your first look at the contact sheets.
+- Branch note: this session was assigned `claude/practical-babbage-8vd63x`; the work is on `claude/2026-11-09` as the routine requires.
+
 ## 2026-11-06
 **This includes everything from PRs #25-#38** (all open `claude/*` PRs, including research PRs #37 and #38).
 Merging this one is enough; the others will close automatically. The merges had no conflicts and `main`

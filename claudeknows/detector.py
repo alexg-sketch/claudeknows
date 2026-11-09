@@ -726,18 +726,23 @@ def main(argv=None):
                    help="save progress here after every epoch and continue from it if it exists")
     t.add_argument("--workers", type=int, default=2,
                    help="extra processes that load photos (0 = none)")
+    t.add_argument("--gold-dir", default=None,
+                   help="where the frozen gold set lives (Drive copy); default: --root")
     t.add_argument("--max-batches", type=int, default=None)
     t.add_argument("--no-pretrained", action="store_true")
     t.add_argument("--out", default="detector.pt")
     r = sub.add_parser("report")
     r.add_argument("--root", default="data/detection")
+    r.add_argument("--gold-dir", default=None,
+                   help="where the frozen gold set lives (Drive copy); default: --root")
     r.add_argument("--checkpoint", default="detector.pt")
     r.add_argument("--tta", choices=["flip", "tiles"], default=None,
                    help="test-time augmentation: flip = mirror + 1.3x, tiles = also 4 zoomed tiles")
     a = p.parse_args(argv)
     samples, pending = scan_detection(a.root)
     from .gold import gold_samples, load_gold, remove_gold, verify_gold
-    gold = load_gold(a.root)
+    gold_dir = a.gold_dir or a.root
+    gold = load_gold(gold_dir)
     if gold:  # frozen yardstick: out of train AND test pools
         samples = remove_gold(samples, gold)
     scenes = scene_groups(samples)
@@ -776,9 +781,9 @@ def main(argv=None):
             print(f"\nwithout --tta {a.tta}:")
             print(format_report(build_report(plain, classes), bootstrap_ci(plain, classes)))
         if gold:
-            for prob in verify_gold(gold, a.root):
+            for prob in verify_gold(gold, gold_dir):
                 print("WARNING gold set", prob)
-            gres = predict_samples(model, gold_samples(gold, a.root), tta=a.tta)
+            gres = predict_samples(model, gold_samples(gold, gold_dir), tta=a.tta)
             print(f"\nGOLD SET (frozen {gold['created']}, {len(gres)} images, never trained on):")
             print(format_report(build_report(gres, classes), bootstrap_ci(gres, classes)))
         print(f"\n(distance photos, used in task 21: {len(load_distance_photos(a.root))})")
