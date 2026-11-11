@@ -1,5 +1,44 @@
 # Progress log
 
+## 2026-11-11
+**This includes everything from PR #42** (the only open `claude/*` PR: research 2026-11-11).
+Merging this one is enough; #42 will close automatically. `main` is contained in the branch.
+
+**Done** (roadmap task 26, auto-labelling of walk frames)
+- New `claudeknows/selflabel.py`. For each walk (the frames made by task 24), two "labellers" look at every frame:
+  the current detector and OWLv2. What happens to each box:
+  - **Both agree** (same object, boxes overlap, both confident) **and the object is also seen in at least 2 of the
+    4 neighbouring frames** -> it becomes a training label.
+  - **Agreed but flickers** (only in one frame): if both were very sure (>= 0.6) it becomes a question for you, otherwise dropped.
+  - **Only one labeller saw it** (confidently) -> a question for you.
+  - Boxes neither labeller was confident about are ignored.
+- **No half-labelled frames:** a frame is only used for training when every confident box in it is settled (agreed,
+  or answered by you). Otherwise it is held back, so a real object is never taught as "background".
+  Frames where nothing was found are not used either.
+- **Your review batch:** at most 20 yes/no questions per walk ("is this a shoe?"), the ones the current model disagrees
+  with most come first. `python -m claudeknows.selflabel questions <walks folder>` lists them,
+  `... answer <walks folder> --yes walk1:3 --no walk1:5` records answers; a "yes" adds the box, a "no" removes it.
+  (The buttons for this come with the learning-loop notebook, task 28.)
+- **Limit:** `cap_self_share` keeps self-labelled frames at most 30% of a training set; `self_samples` leaves out any gold walk.
+- Each walk folder gets `selflabels.json` and `review.json` next to its frames (on Colab/Drive, never committed).
+- 11 new tests (fake 5-frame walk: steady box kept, one-frame box dropped; held-back frame becomes usable after a "yes";
+  questions sorted and capped at 20); 118 tests pass.
+
+**Notes**
+- One change from the research plan: to order the questions, the plan said to use the detector's training loss in
+  "train mode". In tests that mostly measured the random background samples the detector picks, so it did not rank a
+  wrong box above a right one. Instead the proposed box is fed straight into the detector's box head and scored with
+  the same two losses ("is this that object?" + "would you move the box?"). Same idea, deterministic, and the test shows a
+  wrong box scoring far higher. It is only used for ordering; nothing is deleted because of it.
+- Nothing here needs a GPU except the real OWLv2 run, which happens in Colab (task 28 notebook).
+
+**Next**
+- Task 27 (retrain from a fresh start + the honest quality gate on the gold set), then 28 (the one-click notebook).
+
+**For Alex to decide**
+- Nothing blocking. There is nothing new for you to run yet: this step gets its notebook in task 28.
+  Authorship check: every commit on main and on this branch is by Claude or Alex (GitHub web-merges by "GitHub").
+
 ## 2026-11-09
 **This includes everything from PRs #25-#40** (all open `claude/*` PRs, including research PRs #37, #38 and #40).
 Merging this one is enough; the others will close automatically. `main` is contained in the branch.
