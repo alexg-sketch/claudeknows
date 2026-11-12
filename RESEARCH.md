@@ -3,6 +3,81 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-12
+
+**Summary.** Two pull requests are open: #43 (task 26, auto-labelling) already contains #42 (yesterday's research), so I started from #43.
+Earlier entries cover the detector, augmentation, depth and the retrain gate in depth, so today I looked at the two loop tasks nobody had
+researched yet: task 28 (the "Run all" learning-loop notebook with yes/no buttons) and task 29 (the drift report). I found one practical trap
+and one measurement gap. (1) In Jupyter/Colab, button clicks are handled only when no cell is running, so during "Run all" every later cell runs
+before Alex can click anything: the notebook must not wait for clicks; answers should be saved as they are given and used on the next run. (2)
+The drift report plans to track "how often self-labels were later corrected", but in our design nobody ever looks at the *accepted* labels
+again, so that number would always look fine. A small random spot check (3 accepted boxes per walk mixed into the review batch) measures the
+auto-label error rate directly. Both are small refinements of unchecked tasks. No new detector, depth model or torchvision change alters the
+plan (torchvision 0.26 is a small release with no detection changes found; RF-DETR Nano-Large remains the Apache-2.0 alternative already on
+Alex's list). Several pages were not reachable from this session, so some details are from search summaries (provisional).
+
+### Recommendations
+
+**1. Learning-loop notebook: never wait for clicks; review comes last and counts next time (refines task 28; small effort, low risk).**
+- What: Jupyter processes widget events (button clicks) only while the kernel is idle. During "Run all" the cells below a button run straight
+  away, before any click (Jupyter Discourse thread; the `jupyter-ui-poll` README says plain widgets "break Cells -> Run All"). Libraries that
+  block a cell until a click exist (`jupyter-ui-poll`, MIT; `ipython_blocking`), but Colab support is not documented, and blocking would also
+  stop phase 4 (training without Colab clicks).
+- How (task 28): order the notebook import walk (24) -> auto-label (26) -> retrain + gate (27) using frames trainable *now* (including answers
+  from earlier walks) -> show the review batch last. Each yes/no click calls `selflabel.apply_answers` straight away and the file is saved to
+  Drive, so the answers count in the next run. The summary says "N questions waiting; answers will be used next time". Use plain `ipywidgets`
+  (preinstalled in Colab): one photo with the box drawn, "Is this a <object>?", Yes / No buttons, next question on click.
+- Do not show the score or which labeller saw the box: practitioner guides warn that reviewers tend to agree with labels shown as machine output,
+  which would hide real mistakes.
+- Test: with no answers the loop still runs to the end; answers saved after a run make those frames trainable in the next run.
+- Gain: the notebook works with one "Run all" as Alex asked, and stays ready for phase 4. Licence: no new library.
+
+**2. Spot-check a few accepted auto-labels per walk to measure their real error rate (refines task 29; small effort, low risk).**
+- What: the review batch only asks about *uncertain* boxes. The boxes both labellers agreed on go straight into training and are never seen by
+  a person, so "how often self-labels were later corrected" would stay near zero even if the labellers were making a steady mistake (for example
+  both calling a thermos a water bottle). Labelling-quality guides recommend a small, *random*, scheduled audit of accepted items with a confidence
+  range. Threshold-based auto-labelling work (Vishwakarma et al., NeurIPS 2023 workshop) likewise relies on human-checked samples to bound the
+  error of machine labels.
+- How: in `selflabel.label_walk` pick `AUDIT_PER_WALK = 3` agreed, steady boxes at random (seeded by walk name so reruns ask the same ones)
+  and add them to the review batch as ordinary-looking questions with `"why": "audit"`. They count toward the cap of 20 and are mixed in
+  rather than sorted by disagreement. They never hold a frame back; "no" removes that box from the labels. Log every audit answer in Drive
+  `claudeknows_models/audit.json`. The drift report (29) shows, per object and overall: audits done, share wrong, and a 95% Wilson range
+  (`(p + z²/2n ± z·sqrt(p(1-p)/n + z²/4n²)) / (1 + z²/n)`, z = 1.96, numpy only). Warn when the lower end is above 5%. Below 20 audits, say "too
+  few checks yet". Report the "no" rate of normal review questions separately, because it describes the uncertain boxes, not the accepted ones.
+- Tests: same walk name -> same audit picks, and only agreed boxes are picked; 0 wrong out of 20 -> range about 0-16%; a "no" on an audit
+  question removes the box.
+- Cost: 3 of Alex's ~20 questions per walk. After about 7 walks there is a first honest estimate of how clean the auto-labels are. That is
+  the number that says whether the loop is teaching the model its own mistakes. Licence: none (own code).
+
+### Considered but not recommended
+- **`jupyter-ui-poll` / `ipython_blocking` to pause "Run all" until Alex answers:** MIT, small, but Colab support is not documented, and a paused
+  notebook cannot run unattended (phase 4). Answers-count-next-run is simpler.
+- **pigeonXT (ready-made notebook annotation widget):** fine for yes/no classification, but we need a box drawn on each photo and answers written
+  straight to `selflabel`; about 30 lines of plain `ipywidgets` do that without a new dependency.
+- **Auditing the rejected/dropped boxes too (to estimate missed objects):** useful in principle, but it costs more of Alex's questions. The gold
+  set already measures recall. Revisit only if gold recall drops.
+- **Periodic multi-round self-training with label-quality and class-balancing steps (IEEE T-IV 2026):** same ingredients as our tasks 26-27
+  (agreement, cut-offs, replay); nothing new to add.
+- **New detectors (YOLO26, Jan 2026):** AGPL-3.0, ruled out. No new Apache-2.0 detector released in Oct/Nov 2026 found.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an optional third
+  labeller (11-07).
+
+### Sources
+- Jupyter Discourse, "Wait for specific user input from widgets": https://discourse.jupyter.org/t/wait-for-specific-user-input-from-widgets/11436
+- jupyter-ui-poll (MIT; README on Run All behaviour): https://github.com/kirill888/jupyter-ui-poll
+- ipython_blocking: https://pypi.org/project/ipython-blocking/
+- pigeonXT notebook annotation: https://github.com/bramiozo/pigeonXT
+- ipywidgets in Colab (preinstalled, `on_click`): https://www.plus2net.com/python/ipywidgets.php
+- Understanding Threshold-Based Auto-Labeling (Vishwakarma et al., NeurIPS 2023 workshop): https://mlanthology.org/neuripsw/2023/vishwakarma2023neuripsw-understanding
+- Roboflow, human-in-the-loop (override/correction rate, reviewer deference): https://blog.roboflow.com/human-in-the-loop-ai/
+- Kili, model evaluation workflow from build to monitor: https://kili-technology.com/blog/ai-model-evaluation-workflow-build-to-monitor
+- Exploring Test-Time Adaptation for Object Detection in Continually Changing Environments (per-class thresholds, skip unneeded updates): https://arxiv.org/html/2406.16439v4
+- Self-training with accurate labelling and class balancing (IEEE T-IV 2026): https://trid.trb.org/View/2685920
+- torchvision 0.26 release: https://newreleases.io/project/pypi/torchvision/release/0.26.0
+- YOLO26 (AGPL, Ultralytics): https://blog.roboflow.com/yolo26/
+
 ## 2026-11-11
 
 **Summary.** No open pull requests, so I started from `main`. No real training run exists yet; the next code is task 26 (auto-labelling walk
