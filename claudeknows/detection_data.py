@@ -23,6 +23,7 @@ skipped for training and counted in the report.
     python -m claudeknows.detection_data import /content/drive/MyDrive/claudeknows_photos
 """
 import argparse
+import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
@@ -343,14 +344,51 @@ def scene_groups(samples, threshold=0.08):
     return scenes
 
 
-def split_detection(samples, test_frac=0.2, seed=0, scenes=None, log=print):
+def split_detection(samples, test_frac=0.2, seed=0, scenes=None, log=print, min_own_test=0):
     """Train/test split by video/photo, never by frame (same rule as the classifier).
 
     With `scenes` (from `scene_groups`) every scene sits wholly on one side, so two
     videos of the same room are never one in train and one in test. If all of Alex's
     videos merge into a single scene that cannot be done, so it falls back to the
     plain by-video split and says so.
+
+    `min_own_test=1` makes sure at least one of Alex's own scenes is tested. The split
+    above works per object folder, and a folder with only one of Alex's scenes keeps it
+    in train, so with one video per folder the test can end up all internet photos.
+    Then one own scene is moved to test: a "together" scene first (it shows several
+    objects), else one from the folder with the most own scenes. Needs 2+ own scenes.
     """
+    train, test = _split_detection(samples, test_frac, seed, scenes, log)
+    if min_own_test:
+        train, test = _ensure_own_test(train, test, seed, scenes, log)
+    return train, test
+
+
+def _ensure_own_test(train, test, seed, scenes, log):
+    unit = (lambda s: scenes.get(s.group, s.group)) if scenes else (lambda s: s.group)
+    if any(s.source == "own" for s in test):
+        return train, test
+    own = {}
+    for s in train:
+        if s.source == "own":
+            own.setdefault(unit(s), set()).add(s.folder)
+    if len(own) < 2:
+        return train, test
+    per_folder = {}
+    for folders in own.values():
+        for f in folders:
+            per_folder[f] = per_folder.get(f, 0) + 1
+
+    def rank(u):
+        return ("together" not in own[u], -max(per_folder[f] for f in own[u]),
+                hashlib.md5(f"{seed}:{u}".encode()).hexdigest())
+
+    pick = min(own, key=rank)
+    log(f"none of your own videos were in the test set: testing on {pick} so the report has an 'own' row")
+    return [s for s in train if unit(s) != pick], test + [s for s in train if unit(s) == pick]
+
+
+def _split_detection(samples, test_frac, seed, scenes, log):
     if scenes:
         own = {scenes[s.group] for s in samples if s.source == "own"}
         n_videos = len({s.group for s in samples if s.source == "own"})
@@ -468,7 +506,7 @@ def main(argv=None):
         import_own_detection(a.drive_dir, a.root, a.fps)
     else:
         samples, pending = scan_detection(a.root)
-        train, test = split_detection(samples)
+        train, test = split_detection(samples, scenes=scene_groups(samples), min_own_test=1)
         print(describe(train, test, pending))
         print(f"measured distance photos: {len(load_distance_photos(a.root))}")
 
