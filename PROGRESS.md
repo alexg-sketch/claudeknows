@@ -1,5 +1,51 @@
 # Progress log
 
+## 2026-11-13
+**This includes everything from PRs #42, #43, #45 and #46.** Merging this one is enough; the others will close
+automatically. It also contains everything already on `main` (including #44, "always test on one of your own videos").
+Note: task 26 (auto-labelling, PR #43) is marked done in the roadmap but is **not on `main` yet**; this PR brings it in.
+
+**Done** (roadmap task 27, retrain + quality gate)
+- New `claudeknows/retrain.py`. One loop run trains **one** new candidate model and decides whether it replaces the current one.
+- **What it trains on:** your original training photos (Open Images + your checked footage) plus self-labelled walk frames
+  from task 26, with self-labelled frames capped at 30% (so the original photos are always the majority). Gold photos are
+  refused, as before. The validation photos (used to pick the best epoch and the score cut-offs) are original photos only.
+- **Fresh start every time:** each candidate starts from the standard pretrained (COCO) weights, not from the current
+  model, so the current model's mistakes can't sneak back through its weights. `--init current` exists for a later comparison;
+  the choice is saved in each model file.
+- **The gate (when a candidate replaces the current model):** both are scored on the gold set, and the difference is
+  resampled 5000 times by whole video. It is promoted only if
+  (1) it is clearly better overall (the low end of the 95% range is above 0),
+  (2) no object may have got worse by more than 2 points,
+  (3) the gain is bigger than the "noise floor" (how much the score moves just by changing the random seed), and
+  (4) the gold set covers at least 5 different scenes. Otherwise it says why, e.g. "not enough evidence: the gold set shows
+  only 3 scenes". A promotion is reported honestly as "at least +X points (middle estimate +Y)".
+- **Keeping the gold set honest:** only one candidate may meet the gold set per run (a second one is refused); every look at
+  the gold set is logged in `gold_log.json`; the summary prints "gold set used N times since <date>" and, after 20 promotion
+  checks, warns that the gold scores are getting optimistic and fresh checked photos would help.
+- **Every version kept:** each candidate is saved dated in `claudeknows_models/` (`detector_2026-11-13.pt`, `_2`, ...), and
+  `detector.pt` is always a copy of the current model (what the notebooks already load). The `detector.pt` you have from
+  before is kept as `detector_original.pt` on the first promotion. **One-line rollback:**
+  `python -m claudeknows.retrain rollback --models-dir <Drive>/claudeknows_models`. `... status` lists versions and gold uses.
+- **Noise floor:** `python -m claudeknows.retrain noise-floor ...` trains the recipe with 3 seeds once and saves the spread.
+  Until it has been measured, nothing is promoted automatically (it says so). Changing the training settings means re-measuring.
+- Also: `detector.paired_differences` (per-object paired comparison; `compare_runs` now uses it) and an `init_state`
+  option in `train_detector`.
+- 9 new tests (identical models not promoted; better overall but worse on one object not promoted; gain below the noise floor
+  not promoted; second candidate refused; one log row per check; warning at 20 checks not 19; fresh vs current start;
+  versions + rollback; a tiny end-to-end run). **129 tests pass.** Also checked the command line on a tiny made-up dataset
+  (first run becomes the current model, second run is kept out because there is no gold set).
+
+**Next:** task 28, the learning-loop notebook: one "Run all" that imports a walk, auto-labels it, retrains + gates, and shows
+your yes/no review questions last (answers count next run).
+
+**For Alex to decide**
+- Nothing new needed to continue. Nothing to run yet: this is the engine; the notebook that uses it is the next task.
+- Before the gate can ever promote a model it needs (a) a gold set with 5+ different places/scenes and (b) one noise-floor
+  run (3 short trainings in Colab, part of the task 28 notebook). If your gold set has fewer than 5 scenes, the loop will keep
+  the current model and say "not enough evidence"; filming the gold footage in more rooms fixes that.
+- Still open from research: RF-DETR vs current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19).
+
 ## 2026-11-11
 **This includes everything from PR #42** (the only open `claude/*` PR: research 2026-11-11).
 Merging this one is enough; #42 will close automatically. `main` is contained in the branch.
