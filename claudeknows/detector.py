@@ -177,7 +177,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                    patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
                    rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15,
                    zoom_crop_p=0.0, ema_decay=0.0, resume_path=None, workers=0,
-                   gold=None):
+                   gold=None, init_state=None):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -199,6 +199,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     `workers` loads photos in that many extra processes (0 = in the training process).
     `gold`: a manifest from `gold.load_gold`; training refuses (GoldLeak) if any gold image is in
     the training, validation or background photos.
+    `init_state`: start from these weights (a state dict, e.g. the current model's) instead of
+    the freshly built model; None = fresh start (COCO weights when `pretrained`).
     """
     if gold:
         from .gold import assert_no_gold
@@ -206,7 +208,10 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     torch.manual_seed(seed)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     lr = 0.005 * batch_size / 8 if lr is None else lr
-    model = build_detector(pretrained=pretrained).to(device)
+    model = build_detector(pretrained=pretrained)
+    if init_state is not None:
+        model.load_state_dict(init_state)
+    model = model.to(device)
     paste = CompositePaste(crop_pool(train_samples), composite, seed=seed) if composite > 0 else None
     transform = train_transform(paste, rot_degrees, rot90_p, zoom_p=zoom_crop_p, seed=seed)
     negatives = list(negatives or [])
@@ -240,6 +245,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                     rot_degrees=rot_degrees, rot90_p=rot90_p, neg_frac=neg_frac, zoom=zoom_crop_p,
                     ema=ema_decay, max_batches=max_batches, n_train=len(train_samples),
                     n_neg=len(negatives), warmup=warmup)
+    if init_state is not None:  # only added when used, so older resume files still match
+        settings["init"] = "given"
     start = 0
     if resume_path and os.path.exists(resume_path):
         ck = torch.load(resume_path, map_location=device, weights_only=True)
@@ -656,25 +663,51 @@ def bootstrap_ci(results, classes=OBJECT_NAMES, n=1000, seed=0):
     return ci
 
 
+def paired_differences(results_a, results_b, classes=OBJECT_NAMES, n=1000, seed=0):
+    """Paired b - a differences in mAP@0.5 over the SAME samples (same order), overall and per object.
+
+    Every object uses the same resampled videos/photos, so the object ranges are comparable.
+    Returns {"overall" or object name: (difference, low, high)} with a 95% range, or None
+    for an object with no boxes in these samples.
+    """
+    import numpy as np
+    assert [s.path for s, _, _ in results_a] == [s.path for s, _, _ in results_b], \
+        "runs must cover the same samples"
+    draws = defaultdict(list)
+    for a, b in _boot_scores(results_a, classes, n, seed, paired_with=results_b):
+        for name in ("overall", *classes):
+            va = _mean(list(a.values())) if name == "overall" else a[name]
+            vb = _mean(list(b.values())) if name == "overall" else b[name]
+            if va is not None and vb is not None:
+                draws[name].append(vb - va)
+    out = {}
+    for name in ("overall", *classes):
+        if name == "overall":
+            fa = _mean([average_precision(results_a, c) for c in classes]) or 0.0
+            fb = _mean([average_precision(results_b, c) for c in classes]) or 0.0
+        else:
+            fa, fb = average_precision(results_a, name), average_precision(results_b, name)
+        if fa is None or fb is None or not draws[name]:
+            out[name] = None
+            continue
+        lo, hi = (float(x) for x in np.percentile(draws[name], [2.5, 97.5]))
+        out[name] = (fb - fa, lo, hi)
+    return out
+
+
+def verdict(lo, hi):
+    return "helped" if lo > 0 else "hurt" if hi < 0 else "no clear difference"
+
+
 def compare_runs(results_a, results_b, classes=OBJECT_NAMES, n=1000, seed=0):
     """Paired A/B verdict on overall mAP@0.5 for two runs over the SAME test samples (same order).
 
     Returns (difference b - a, (low, high), verdict) where verdict is "helped",
     "hurt" or "no clear difference" (the range of the difference excludes 0 or not).
+    Per-object differences: `paired_differences`.
     """
-    import numpy as np
-    assert [s.path for s, _, _ in results_a] == [s.path for s, _, _ in results_b], \
-        "runs must cover the same samples"
-    diffs = []
-    for a, b in _boot_scores(results_a, classes, n, seed, paired_with=results_b):
-        ma, mb = _mean(list(a.values())), _mean(list(b.values()))
-        if ma is not None and mb is not None:
-            diffs.append(mb - ma)
-    lo, hi = (float(x) for x in np.percentile(diffs, [2.5, 97.5]))
-    full_a = _mean([average_precision(results_a, c) for c in classes]) or 0.0
-    full_b = _mean([average_precision(results_b, c) for c in classes]) or 0.0
-    verdict = "helped" if lo > 0 else "hurt" if hi < 0 else "no clear difference"
-    return full_b - full_a, (lo, hi), verdict
+    diff, lo, hi = paired_differences(results_a, results_b, classes, n, seed)["overall"]
+    return diff, (lo, hi), verdict(lo, hi)
 
 
 def format_report(report, ci=None, false_alarms=None, test_scenes=None):
