@@ -3,6 +3,80 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-13
+
+**Summary.** Three pull requests are open. #45 (research 11-12) already contains #43 (task 26) and #42 (research 11-11), so I started
+from #45. The next code is task 27 (retrain + quality gate), so today I looked at a risk nobody had covered yet: **wearing out the gold
+set**. Every walk, a new candidate model is checked against the same small, fixed gold set, and only the ones that look better are kept.
+Each check leaks a little information about the gold photos into the choice of model. Over many walks, a model can end up "good at the
+gold set" rather than good in general, and the gold score of a promoted model is a bit too optimistic (the "winner's curse"). The
+research (Dwork et al. 2015 reusable holdout; Blum & Hardt 2015 "Ladder"; ease.ml/ci test-set budgets; Kaggle and ImageNet re-test
+studies 2019) says two things. First, the gate already follows the safest simple pattern: promote only when the gain clears a margin
+(the Ladder idea). Second, in practice the harm is small *if* the test set is used only for that yes/no decision and the candidates are
+similar, which ours are. So the risk is manageable, but only if the code keeps to a few rules: one candidate per check, never choose
+settings on gold, and count how often gold has been used. **One small roadmap change** (refines task 27). Nothing new on detectors or
+depth models (no new Apache-2.0 detector found for Oct/Nov 2026; RF-DETR Nano-Large is still the open option on Alex's list).
+arxiv.org and several blogs were not reachable from this session, so paper details are from search summaries (provisional).
+
+### Recommendations
+
+**1. Use the gold set only for the yes/no promotion, and count how often it is used (refines task 27; small effort, low risk).**
+- What: "adaptive overfitting" means picking models by their score on a test set that is used again and again. Formal guarantees need a large
+  test set: with a Hoeffding bound over all pass/fail histories (the approach of ease.ml/ci, MIT), keeping a ±5-point error at 95% confidence
+  over 20 checks needs roughly `(20·ln2 + ln 20) / (2·0.05²)` ≈ 3,400 test items. That is my own rough calculation in the spirit of the paper.
+  Our gold set will have tens to a few hundred photos, so a formal guarantee is out of reach. The practical evidence is reassuring under
+  conditions we can enforce. The Kaggle meta-analysis (Roelofs et al., NeurIPS 2019; 100+ competitions) and the ImageNet/CIFAR re-tests found
+  little real overfitting from test reuse, and Mania et al. 2019 show it is smaller still when the compared models are similar. The Ladder
+  (Blum & Hardt 2015) shows that "accept only if the gain beats a margin" is what limits the leak, and task 27 already does that (lower bound
+  > 0 plus noise floor). What breaks these protections is using the test score for anything more than that one decision: best-of-several
+  seeds, choosing settings, re-running a candidate until it passes.
+- How (task 27, in the gate code, e.g. a `gold_gate` / `promote` function):
+  - **Exactly one candidate meets the gold set per loop run.** If a run tries a second candidate, refuse with a clear message. Seeds, `--init`,
+    augmentation settings, score cut-offs (23m) and early stopping are chosen on the validation split only, never on gold. The one-off
+    noise-floor measurement (3 seeds) is logged as gold uses, but its models are never promotion candidates.
+  - **Gold-use log** in Drive `claudeknows_models/gold_log.json`: one row per gold check (date, candidate name, verdict, overall difference and
+    range, `kind`: "gate" or "noise-floor"). The summary prints "gold set used N times since <created date>".
+  - **Wear warning:** `GOLD_LOOK_BUDGET = 20` gate checks (constant in config). After that, the summary adds one line: "the gold set has been
+    used for 20+ decisions; its scores are getting optimistic. Consider adding fresh checked photos (see RESEARCH.md 2026-11-13)". This is a
+    warning only: the gate keeps working and the gold set is never changed by the loop.
+  - **Honest wording for promotions:** report the gain as "at least +X" using the lower end of the paired range, with the middle value in
+    brackets, so the winner's curse does not inflate the headline.
+- Tests (CPU, fake results): a second candidate in one run is refused; every gate and noise-floor check adds one log row; the warning appears
+  at 20 gate checks and not at 19; the promotion message uses the lower bound.
+- Gain: keeps the gold set honest for many more walks, at almost no cost. It also gives a clear signal for when Alex should add fresh checked
+  photos, instead of a silent drift toward over-optimistic scores. Licence: own code, no new library.
+
+### Considered but not recommended
+- **Differentially private "reusable holdout" / Thresholdout (Dwork et al. 2015):** adds noise to every gold score. With a gold set this small
+  the noise would swamp real differences. The one-candidate rule plus the existing margin gets most of the benefit.
+- **Splitting gold into a "gate" half and a "sealed" half checked rarely:** a clean check for wear, but it halves an already small set, and the
+  gate already refuses to auto-promote with fewer than 5 gold scenes. Fresh additions (see "For Alex to decide") do the same job better.
+- **ease.ml/ci formal sample-size budgets:** right idea, but needs thousands of gold items. Only the "count uses, warn when spent" part is kept.
+- **Using walk frames where neither labeller sees anything as extra background photos:** the co-training detection work (arXiv 2008.05534)
+  warns that self-labelled "empty" frames hide missed objects and should not be used as negatives. Keys are small and OWLv2 misses them, so
+  today's rule (empty walk frames are not used; negatives come from Open Images and Alex's `empty/` folder, 23d) is the right one.
+- **New detectors:** no new Apache-2.0 detector release found for Oct/Nov 2026. RF-DETR Nano to Large (Apache-2.0) is still the open option.
+
+### For Alex to decide
+- **Adding fresh gold photos later (only when the wear warning appears, so not yet):** your rule says the gold set is fixed and never changed
+  by the loop. When the warning fires, the clean fix is for *you* to check a new batch of photos from recent walks (same review step as task
+  25b) and freeze it as a second gold batch. The first batch stays exactly as it is, and both batches are scored separately, so it is easy to
+  see whether the old batch has become too easy. If you are happy with that, say so and I will plan it as a task. Otherwise nothing to do.
+- Still open from earlier: RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Dwork et al., The reusable holdout (Google Research blog, 2015): https://blog.research.google/2015/08/the-reusable-holdout-preserving.html
+- Blum & Hardt, The Ladder: a reliable leaderboard for ML competitions (2015): https://www.arxiv.org/abs/1502.04585 , summary https://sotaverified.org/papers/the-ladder-a-reliable-leaderboard-for-machine
+- Hardt, Climbing a shaky ladder (2017): https://ar5iv.labs.arxiv.org/html/1706.02733
+- ease.ml/ci, Continuous integration of ML models (test-set reuse budgets, MIT): https://arxiv.org/pdf/1903.00278 , https://github.com/easeml/ci
+- A Data Quality-Driven View of MLOps (test-set reuse, alarms): https://arxiv.org/pdf/2102.07750
+- Roelofs et al., A Meta-Analysis of Overfitting in Machine Learning (NeurIPS 2019): https://papers.nips.cc/paper/9117-a-meta-analysis-of-overfitting-in-machine-learning
+- Mania et al., Model Similarity Mitigates Test Set Overuse (2019): https://arxiv.org/pdf/1905.12580
+- Efficient Lifelong Model Evaluation (ever-growing test pools): https://arxiv.org/pdf/2402.19472
+- Co-training for On-board Deep Object Detection (self-labelled negatives hide missed objects): https://arxiv.org/pdf/2008.05534
+- Self-training and adversarial background regularization (false negatives in hard-negative mining): https://arxiv.org/pdf/1909.00597
+- RF-DETR licences (Nano-Large Apache-2.0, XL/2XL PML): https://playground.roboflow.com/models/roboflow/rf-detr
+
 ## 2026-11-12
 
 **Summary.** Two pull requests are open: #43 (task 26, auto-labelling) already contains #42 (yesterday's research), so I started from #43.
