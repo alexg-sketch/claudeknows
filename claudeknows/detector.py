@@ -746,7 +746,7 @@ def main(argv=None):
     if gold:  # frozen yardstick: out of train AND test pools
         samples = remove_gold(samples, gold)
     scenes = scene_groups(samples)
-    train, test = split_detection(samples, scenes=scenes)
+    train, test = split_detection(samples, scenes=scenes, min_own_test=1)
     negs_train, negs_test = split_detection(scan_negatives(a.root))
     if a.cmd == "train":
         fit, val = (split_detection(train, a.val_frac, scenes=scenes) if a.val_frac > 0

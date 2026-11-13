@@ -98,3 +98,39 @@ def test_one_scene_falls_back_to_by_video(tmp_path):
     logs = []
     dd.split_detection(samples, 0.5, 0, scenes=dd.scene_groups(samples), log=logs.append)
     assert any("ONE scene" in l for l in logs)
+
+
+def _own_and_web(own_folders):
+    """One of Alex's videos per folder (3 frames each) plus 30 internet photos."""
+    samples = []
+    for folder in own_folders:
+        label = dd.FOLDERS.index(folder)
+        samples += [dd.DetSample(f"vid_{folder}__f{i}.jpg", label, "own", f"vid_{folder}", folder,
+                                 (), "owlv2") for i in range(3)]
+    samples += [dd.DetSample(f"w{i}.jpg", i % 3, "web", f"w{i}", dd.FOLDERS[i % 3], (), "openimages")
+                for i in range(30)]
+    return samples
+
+
+def test_min_own_test_puts_one_own_video_in_test():
+    samples = _own_and_web(["water_bottle", "keys", "shoes", "together"])
+    logs = []
+    train, test = dd.split_detection(samples, log=logs.append)
+    assert not any(s.source == "own" for s in test)  # one video per folder: all stay in train
+    train, test = dd.split_detection(samples, log=logs.append, min_own_test=1)
+    assert {s.group for s in test if s.source == "own"} == {"vid_together"}  # together first
+    assert {s.group for s in train}.isdisjoint({s.group for s in test})
+    assert len(train) + len(test) == len(samples)
+    assert {s.folder for s in train if s.source == "own"} == {"water_bottle", "keys", "shoes"}
+    assert any("vid_together" in l for l in logs)
+
+
+def test_min_own_test_needs_two_own_videos_and_keeps_scenes_whole():
+    one = _own_and_web(["keys"])
+    train, _ = dd.split_detection(one, log=lambda *_: None, min_own_test=1)
+    assert any(s.source == "own" for s in train)  # the only own video stays in train
+    two = _own_and_web(["keys", "shoes"])
+    scenes = {s.group: s.group for s in two}
+    scenes["vid_keys"] = scenes["vid_shoes"] = "scene_vid_keys"  # same room
+    train, test = dd.split_detection(two, scenes=scenes, log=lambda *_: None, min_own_test=1)
+    assert not any(s.source == "own" for s in test)  # one scene: nothing to hold out
