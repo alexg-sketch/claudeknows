@@ -3,6 +3,78 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-14
+
+**Summary.** Five pull requests are open. #47 (task 27, retrain + quality gate) already contains #42, #43, #45 and #46, so I started
+from #47. The next code is task 28 (the learning-loop notebook), and the first time that notebook runs it must measure the **noise
+floor**: how much the gold-set score moves just from changing the random seed. Task 27 measures it once, with 3 seeds, as max minus
+min, and then uses that single number for every later walk. I checked how reliable that is. A quick simulation (my own, normal
+seed noise) shows that with 3 seeds there is about a **1 in 6 chance the measured floor comes out under half its typical size**, and
+then the gate would let "lucky seed" candidates through for as long as the floor is kept. With 5 seeds and a standard-deviation-based
+floor this drops to about 1 in 15. The variance literature (Bouthillier et al., MLSys 2021; Roboflow100-VL 2025, which ran 10 seeds
+per dataset because single-dataset spread is large) agrees that a handful of seeds is a minimum on small datasets. **One small
+roadmap change** (refines task 28). Nothing new on detectors (no new Apache-2.0 release found for Nov 2026; RF-DETR Nano-Large is
+still the open option) or depth models. arxiv.org, research.google.com and proceedings.mlsys.org were not reachable from this
+session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. A steadier noise floor: 5 seeds, standard deviation instead of max - min, saved seed by seed (refines task 28; small effort, low risk).**
+- What: the gate in task 27 promotes a candidate only if its gold-set gain beats the noise floor (plus the bootstrap and per-object
+  rules). The floor is measured once and kept. With only 3 seeds, max - min is a very jumpy estimate. Simulation with seed noise of
+  size σ (400,000 draws):
+
+  | rule | typical floor | chance floor < half its typical size | candidate with NO real gain passes the floor rule |
+  |---|---|---|---|
+  | 3 seeds, max - min (today) | 1.6σ | 16% | 15% |
+  | 5 seeds, max - min | 2.3σ | 7% | 8% |
+  | 5 seeds, 2.5 × std | 2.3σ | 7% | 8% |
+
+  The last column ignores the gate's other rules (the gold bootstrap lower bound > 0 also has to pass), so real false promotions are
+  rarer, but the bootstrap only covers "which gold photos", not "which seed", so the floor is the only guard against seed luck.
+  Power is about the same: a true gain of 3σ passes the floor rule ~66% of the time with 5 seeds (vs ~79% with today's looser rule).
+- Why std rather than max - min with 5 seeds: same numbers now, but max - min grows as seeds are added, while the standard deviation
+  does not, so topping up seeds later (or after a disconnect) never makes the gate stricter by accident. 2.5 ≈ one-sided 95% for the
+  difference of two single runs (1.645 × √2 = 2.33), rounded up a little because σ is itself estimated from 5 runs.
+- How (task 28 notebook + `retrain.py`): `NOISE_SEEDS = (0, 1, 2, 3, 4)`; floor = `2.5 * np.std(gold_maps, ddof=1)`. Write each
+  seed's gold mAP into `noise_floor.json` as soon as its training finishes (atomic write, as `_write` already does), with the recipe.
+  A free Colab session has no guaranteed length (Google does not publish the limits; ~12 h max and idle cut-offs are commonly
+  reported), and 5 trainings may not fit in one sitting, so the next run trains only the missing seeds. Until all 5 exist the gate
+  does not promote and says "noise floor: N of 5 seeds measured". Each seed is scored on gold once and logged once (keeps the
+  gold-use count from 11-13 honest). A floor already saved with 3 seeds is topped up with seeds 3 and 4 rather than re-measured.
+- Tests (CPU, fake gold scores, no training): floor equals 2.5 × sd; after a simulated stop at seed 2 the next run trains only seeds
+  3-4; with 4 of 5 seeds the gate does not promote and says why; an old 3-seed file is topped up.
+- Gain: fewer "lucky seed" promotions over many walks, at the cost of 2 extra trainings, once. Licence: own code, numpy only.
+
+### Considered but not recommended
+- **Probability-of-outperforming test with many seeds per candidate (Bouthillier et al. 2021):** the gold standard for comparing two
+  recipes, but it needs several trainings per candidate on every walk; too slow for a free Colab loop. The one-off seed spread is the
+  affordable version.
+- **Using training-log statistics to sharpen comparisons (arXiv 2608.02705, ICML 2026):** early-training logs used as covariates cut
+  uncertainty in their vision study, but the authors warn that picking the "best" log statistic adds noise. Too fiddly for now.
+- **Calling `drive.flush_and_unmount()` at the end of the loop notebook:** blogs recommend it so buffered Drive writes are saved, but
+  in task 28 Alex's yes/no clicks are saved to Drive *after* the cells finish, so unmounting at the end would break them. No official
+  source found on how Colab's Drive mount buffers writes; the atomic write already in `_write` is the safe part.
+- **LLMDet / MM-Grounding-DINO as an alternative or third labeller:** one practitioner benchmark (Jan 2026) rates LLMDet above OWLv2 in
+  zero-shot accuracy, but I could not confirm the licence of the weights from this session. Revisit only if review batches are too big
+  (same trigger as the SAM 3 idea from 11-07).
+- **New detectors:** none with Apache-2.0 weights found for Nov 2026. YOLOv10/v12/YOLO26 remain AGPL.
+
+### For Alex to decide
+- Nothing new today. Still open from earlier: fresh gold photos when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16),
+  Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Bouthillier et al., Accounting for Variance in Machine Learning Benchmarks (MLSys 2021): https://arxiv.org/abs/2103.03098 , PDF https://proceedings.mlsys.org/paper_files/paper/2021/file/0184b0cd3cfb185989f858a1d9f5c1eb-Paper.pdf
+- Bouthillier thesis summary (data splits are the biggest variance source): https://umontreal.scholaris.ca/items/a2f53797-81b4-4fbd-8045-3cbc143549d2
+- Colas et al., How Many Random Seeds? (power analysis for seed counts): https://arxiv.org/pdf/1806.08295
+- Roboflow100-VL (10 runs per dataset; single-dataset variance is high): https://arxiv.org/pdf/2505.20612
+- Can Training Logs Make Model Comparisons More Precise? (ICML 2026): https://arxiv.org/pdf/2608.02705 , https://icml.cc/virtual/2026/79983
+- Colab limits are unpublished and variable (third-party summaries of the FAQ): https://gpuperhour.com/blog/free-cloud-gpus-and-credits , https://www.hivenet.com/post/google-colaboratory-gpu-complete-guide-to-free-cloud-gpu-access-and-limitations
+- Drive flush advice (blog): https://towardsai.com/p/education/use-google-colab-like-a-pro ; open Drive mount bug (Apr-Nov 2026): https://github.com/googlecolab/colabtools/issues/5944
+- Zero-shot detector benchmark incl. LLMDet vs OWLv2 (Jan 2026): https://towardsai.net/p/machine-learning/benchmarking-zero-shot-object-detection-a-practical-comparison-of-sota-models
+- RF-DETR licences: https://playground.roboflow.com/models/roboflow/rf-detr
+
 ## 2026-11-13
 
 **Summary.** Three pull requests are open. #45 (research 11-12) already contains #43 (task 26) and #42 (research 11-11), so I started
