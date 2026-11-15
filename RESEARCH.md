@@ -3,6 +3,81 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-15
+
+**Summary.** Six pull requests are open. #48 (research 11-14) already contains #47 (task 27), #46, #45, #43 and #42, so I started
+from #48. The last few entries were all about the gold-set gate. Today I looked at a different risk in the self-learning loop:
+**self-labels follow what the model already does well.** A walk frame only becomes training data when the current detector and OWLv2
+agree. Keys are small and OWLv2 often misses them, so most self-labels will be shoes and bottles. When the 30% cap applies, frames are
+picked at random, so that skew carries straight into training, walk after walk. The self-training literature calls this the "Matthew
+effect": strong classes get stronger and weak ones drift toward zero (Debiased Self-Training, NeurIPS 2022; IceBerg, WWW 2025;
+a 2025 domain-adaptive detection study that saw rare-class pseudo-labels get worse over rounds). Sbeyti et al. (TMLR 2025) fix it in
+detection with class-aware batch sampling ("Rare Class Focus"). On 10-25 I wrote "revisit class balancing only if Alex's own footage skews
+one class". Self-labelled walks are exactly that case. I also looked at **label-free ways to notice the model getting worse in new
+places** (BoS score, ICLR 2024; PCR, ICCV 2025). The cheapest version we can use is a number the loop already computes: how often the
+detector and OWLv2 agree, per object. **Two roadmap changes:** a new task 29b and a refinement of task 29. Nothing new on detectors
+(still no new Apache-2.0 release; RF-DETR Nano-Large, DEIMv2, D-FINE remain the open options) or depth. arxiv.org and most paper sites
+were not reachable from this session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Rarest object first when the self-label cap applies (new task 29b; small effort, low risk).**
+- What: `cap_self_share` keeps self-labelled frames at no more than 30% of training by picking frames at random. Random picking keeps
+  the walk's mix, and that mix leans toward what the current model already finds well. Sbeyti et al. 2025 make sure every batch has
+  rare-class images, and note that resampling whole images only partly helps, because each image keeps its own class mix. Our version
+  works at the selection step: put each frame in the group of the rarest object it contains, shuffle each group with the seed, then
+  take frames round-robin with the rarest group first until the cap is reached.
+- Why here: the cap starts to apply after about 2-3 walks (30/70 × ~900 original photos ≈ 390 frames; a 2-minute walk gives up to ~240
+  frames after removing duplicates). From then on, every retrain picks which self-labels to use. Keys are already the weakest object,
+  and a "no object worse by 2 points" gate can only refuse a bad candidate. It cannot add key examples. This keeps all the scarce key
+  self-labels and drops extra shoe frames instead.
+- How: only `selflabel.cap_self_share` changes (plus one log line in the loop summary: "self-labelled boxes used: keys 40 of 40,
+  water_bottle 150 of 300, shoes 150 of 620"). Under the limit, nothing changes. The 30% share, the agreement rules and the gate stay
+  the same. Tests: 10 key + 100 shoe frames with room for 30 → all 10 key frames picked; same seed → same pick; under the limit →
+  unchanged.
+- Expected gain: protects key recall over many walks, but the size is unknown. The gold gate measures it, and the per-object counts
+  make the skew visible. Risk: if some key self-labels are wrong, keeping all of them gives the errors more weight. The task-29 spot
+  checks (audit, 11-12) report the share of wrong boxes per object, which is the guard. Licence: own code.
+
+**2. Detector-OWLv2 agreement rate per object as an early warning (refines task 29; small effort, low risk).**
+- What: label-free performance estimation for detectors (BoS, ICLR 2024: box stability under feature dropout tracks mAP, R² > 0.94 in
+  their tests; PCR, ICCV 2025: consistency of candidate boxes) shows that disagreement in predictions goes with lower accuracy. We already
+  run two independent labellers on every frame, so the share of boxes they agree on, per object, is a free signal of the same kind.
+- Why here: the gold score of the *current* model only changes when a model is promoted, so on its own it cannot show that a new room
+  or new lighting is hard. The agreement rate is measured on every new walk. Caveat from the drift literature (ICLR 2026 workshop):
+  label-free drift signals often raise false alarms on harmless shifts. So this is a warning line only, with a high bar (3 walks in a
+  row, 15+ points below the earlier median, at least 10 boxes per walk). The summary names the gold set and spot checks as the real test.
+- How: count per object in `selflabel.label_walk` (agreed / detector-only / OWLv2-only, before the steadiness rule), save it in the walk
+  stats, and let the drift report compute the rates and the warning. Tests with fake stats (see task 29).
+- Gain: notices, without labels, that a place or object is getting harder before many walks have gone into training. Licence: own code.
+
+### Considered but not recommended
+- **BoS score itself (feature-dropout box stability, ICLR 2024; code on GitHub, licence not checked from here):** needs dropout put into
+  the detector backbone and extra passes per frame. The two-labeller agreement rate gives a similar signal for free.
+- **PCR AutoEval (ICCV 2025):** needs a "meta-dataset" of many shifted labelled sets to fit the mapping to mAP. Too heavy for us.
+- **Rare Class Collage / copy-pasting key crops into walk frames (TMLR 2025; 2026 T-IV multi-round self-training with copy-paste):**
+  the project already has copy-paste compositing (task 23 series). Adding self-labelled key crops would paste possibly wrong labels
+  into many images. Wait for the audit numbers to show key self-labels are reliable.
+- **Lower OWLv2/detector cut-offs for keys in self-labelling (class-adaptive thresholds, Li et al. 2021):** more key self-labels but more
+  wrong ones, against Alex's "only confident labels where both agree" rule. Per-object cut-offs (23m) already exist for the detector.
+- **New detectors / depth:** nothing new under Apache-2.0 in Nov 2026. YOLO26 is AGPL.
+
+### For Alex to decide
+- Nothing new today. Still open: fresh gold photos when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3
+  Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Sbeyti et al., Building Blocks for Robust and Effective Semi-Supervised Real-World Object Detection (TMLR 2025): https://arxiv.org/html/2503.18903 , https://mlanthology.org/tmlr/2025/sbeyti2025tmlr-building/
+- Debiased Self-Training for Semi-Supervised Learning (NeurIPS 2022): https://arxiv.org/pdf/2202.07136v3.pdf
+- IceBerg, debiased self-training and the Matthew effect (WWW 2025): https://www.arxiv.org/pdf/2502.06280
+- Large Self-Supervised Models Bridge the Gap in Domain Adaptive Object Detection (rare-class pseudo-label decay, 2025): https://arxiv.org/pdf/2503.23220
+- Improving Object Detection Through Self-Training With Accurate Labeling and Class Balancing (IEEE T-IV 2026): https://trid.trb.org/View/2685920
+- Rethinking Pseudo Labels for Semi-Supervised Object Detection (class-adaptive thresholds): https://arxiv.org/pdf/2106.00168
+- Bounding Box Stability against Feature Dropout (BoS, ICLR 2024): https://ar5iv.labs.arxiv.org/html/2403.13803 , code https://github.com/YangYangGirl/BoS
+- Yoo et al., Automated Model Evaluation for Object Detection via Prediction Consistency and Reliability (ICCV 2025): https://openaccess.thecvf.com/content/ICCV2025/papers/Yoo_Automated_Model_Evaluation_for_Object_Detection_via_Prediction_Consistency_and_ICCV_2025_paper.pdf
+- Drift detectors and false alarms on benign shifts (ICLR 2026 workshop poster): https://utw10244.utweb.utexas.edu/pubs/neves_iclr26_poster.pdf
+- Detector licences overview (RF-DETR, DEIMv2, YOLO26): https://blog.roboflow.com/best-object-detection-models/ , https://playground.roboflow.com/models/ultralytics/yolo26
+
 ## 2026-11-14
 
 **Summary.** Five pull requests are open. #47 (task 27, retrain + quality gate) already contains #42, #43, #45 and #46, so I started
