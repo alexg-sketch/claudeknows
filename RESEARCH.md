@@ -3,6 +3,68 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-16
+
+**Summary.** Seven pull requests are open. #49 (research 11-15) already contains #48, #47, #46, #45, #43 and #42, so I started
+from #49. Next to be coded is task 28 (the learning-loop notebook), which shows Alex's yes/no review batch (at most 20 questions
+per walk). Today I looked at **how many of those 20 questions are really different questions.** Walk frames are taken twice a second,
+and near-identical frames are dropped, but the same object still shows up in several frames in a row. If only OWLv2 (or only the
+detector) sees a key on a table, `label_walk` makes one question **per frame**, so one key can take, say, 6 of the 20 places. Each of
+those frames also stays held back until its own question is answered, and questions past the cap of 20 are never asked. Work on
+video labelling and video active learning says the same thing: frame-by-frame selection wastes the budget on near-duplicates.
+Ince et al. (ICIP 2021) link detections over time into "tracklets" and have the person check a whole tracklet at once (up to 96%
+less annotation work in their drone videos); SPAM (2024) labels "track-centric" instead of frame-centric; CUTAL (May 2026) finds that
+picking clips by uncertainty alone picks neighbours with the same uncertainty and spreads picks out over time instead. **One roadmap
+change** (new task 29c): group questions about the same object in neighbouring frames and ask once. Nothing new on detectors
+(no new Apache-2.0 release found for Nov 2026; RF-DETR Nano-Large is still the open option, YOLO26 is AGPL) or depth. arxiv.org was not
+reachable from this session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Ask once per object, not once per frame (new task 29c; small effort, low-medium risk).**
+- What: before the questions are ordered and capped in `selflabel.label_walk`, link questions into short "tracks": same object
+  label, frames at most 2 positions apart in walk order, and box IoU > 0.3 (`STEADY_IOU`, the same rule the steadiness check
+  uses) with the track's last box. At most one box per frame in a track (keep the best IoU), and at most 8 frames per track (about 4 s
+  of walk at 2 frames per second) so a track cannot drift onto a different object. Each track becomes **one** question. Show its
+  highest-scoring member's frame and box (same plain view as now: photo, box, "Is this a <object>?", no score, no frame count).
+  Order tracks by the highest disagreement among their members, then apply the cap of 20 to tracks.
+- Answer: `apply_answers` applies a track's yes/no to every member. "Yes" adds each member's own box to its own frame (marked
+  `by="alex-track"` so the drift report can tell them apart from single answers); "no" removes every member's question. Frames become
+  trainable as soon as their open questions are gone, as now.
+- Why here: the question budget is the scarcest thing in the loop (Alex's time), and keys, the weakest object, are the object most
+  likely to be seen by only one labeller and so to need questions. Grouping lets the same 20 answers resolve several times more frames,
+  and fewer questions fall past the cap. It also fits the rarest-object-first cap (29b): more key frames become usable.
+- Risk: one wrong "yes" now adds up to 8 wrong boxes instead of 1 (and one right "yes" adds up to 8 right ones). Guards: the strict
+  link rule and the 8-frame limit; the audit spot checks (task 29) still sample single agreed boxes; the drift report should show the
+  "no" rate for track questions separately. Audit questions (task 29) are never grouped.
+- How: own code in `selflabel.py` (numpy/IoU only, reuse `autobox.iou`); question records get `"members": [{"frame", "box", "score"}]`;
+  log line "N per-frame questions grouped into M questions". Tests: 6 neighbouring frames with the same OWLv2-only key box shifting a
+  little -> 1 question, and "yes" makes all 6 frames trainable (when they have no other open questions); two different objects in the
+  same frames -> 2 questions; a gap of 3 frames starts a new track; a 10-frame run becomes 2 tracks (8 + 2); "no" adds no box anywhere.
+- Expected gain: depends on how long objects stay in view in real walks; if a one-labeller object is typically seen in 3-6 frames,
+  the same 20 answers cover roughly 3-6 times as many frames. The walk log line will show the real ratio. Licence: own code.
+
+### Considered but not recommended
+- **SAM 2 / SAM 3 video propagation to build tracks:** better tracks, but needs a large extra model in the loop, and on 10-29 and 11-07
+  the advice was to wait. Simple IoU linking is enough when frames are only 0.5 s apart.
+- **Carrying unasked questions (those past the cap of 20) to the next run:** they are lost today and their frames stay held back. With
+  grouping, far fewer questions should fall past the cap; revisit if the walk log keeps showing "over the cap".
+- **k-center / spacing rules to spread questions over a walk (CUTAL, 2026):** useful when many different questions compete; grouping
+  removes most of the duplicates it guards against. Revisit if a walk regularly has more than 20 tracks.
+- **New detectors / depth:** nothing new under Apache-2.0 in Nov 2026.
+
+### For Alex to decide
+- Nothing new today. Still open: fresh gold photos when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3
+  Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Ince, Koksal, Fazla, Alatan, Semi-Automatic Video Annotation for Object Detection (tracklet verification, ICIP 2021): https://arxiv.org/abs/2101.06977v3 , https://www.emergentmind.com/papers/2101.06977
+- SPAM: A Video Label Engine for Efficient Tracking Annotations (track-centric labelling, 2024): https://arxiv.org/pdf/2404.11426.pdf , https://chatpaper.com/paper/15360
+- CUTAL, Clip-level Uncertainty and Temporal-aware Active Learning for End-to-End Multi-Object Tracking (May 2026): https://arxiv.org/pdf/2605.09858 , https://www.themoonlight.io/review/clip-level-uncertainty-and-temporal-aware-active-learning-for-end-to-end-multi-object-tracking
+- Exploring Diversity-based Active Learning for 3D Object Detection (redundant frames from uncertainty-only picks): https://arxiv.org/html/2205.07708v3
+- Sampling Strategies for Efficient Training of Object Detectors (frame redundancy in video, 2025): https://arxiv.org/html/2505.18302v2
+- Detector licences: https://cdn.jsdelivr.net/gh/roboflow/rf-detr@develop/README.md , https://learnopencv.com/yolov26-real-time-deployment/ , https://lightly.ai/blog/best-ultralytics-alternatives-in-2026
+
 ## 2026-11-15
 
 **Summary.** Six pull requests are open. #48 (research 11-14) already contains #47 (task 27), #46, #45, #43 and #42, so I started
