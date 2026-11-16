@@ -105,6 +105,10 @@ Open `web/spatial.html` for a one-page guide. In short:
   detector to Google Drive `claudeknows_models/`.
 - Try it (a few minutes, no training): `notebooks/try_spatial.ipynb` loads that saved detector
   and draws boxes, labels and distances on photos you upload.
+- Learn from a walk (phase 2): put a phone video in Drive `claudeknows_photos/walks/` and run
+  `notebooks/learning_loop.ipynb`. It labels the walk, retrains only when there is enough new data,
+  keeps a new model only if it beats the current one on the checked gold photos, writes a summary to
+  `claudeknows_models/loop_summary.txt`, and ends with yes/no questions (answers count next run).
 
 ## Tests
 

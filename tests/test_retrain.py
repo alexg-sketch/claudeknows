@@ -1,6 +1,8 @@
+import json
 import random
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -68,12 +70,57 @@ def test_second_candidate_refused_and_every_check_logged(tmp_path):
         gate.check("b", r, r, 10, 0.0)
     rows = retrain.load_gold_log(tmp_path)
     assert [x["kind"] for x in rows] == ["gate"] and rows[0]["candidate"] == "a"
-    retrain.record_noise_floor(tmp_path, [0.5, 0.52, 0.49], {"epochs": 1, "seeds": [0, 1, 2]})
+    maps = [0.5, 0.52, 0.49, 0.51, 0.5]
+    retrain.record_noise_floor(tmp_path, maps, {"epochs": 1, "seeds": [0, 1, 2, 3, 4]})
     rows = retrain.load_gold_log(tmp_path)
-    assert [x["kind"] for x in rows] == ["gate"] + ["noise-floor"] * 3
-    assert retrain.load_noise_floor(tmp_path) == pytest.approx(0.03)
-    assert retrain.load_noise_floor(tmp_path, {"epochs": 1}) == pytest.approx(0.03)
+    assert [x["kind"] for x in rows] == ["gate"] + ["noise-floor"] * 5
+    want = 2.5 * float(np.std(maps, ddof=1))
+    assert retrain.load_noise_floor(tmp_path) == pytest.approx(want)
+    assert retrain.load_noise_floor(tmp_path, {"epochs": 1}) == pytest.approx(want)
     assert retrain.load_noise_floor(tmp_path, {"epochs": 2}, log=lambda *_: None) is None
+
+
+def test_noise_floor_is_2_5_sd_and_resumes_after_a_stop(tmp_path, monkeypatch):
+    fake = {0: 0.50, 1: 0.53, 2: 0.48, 3: 0.52, 4: 0.49}
+    trained = []
+
+    def train_fn(seed):
+        trained.append(seed)
+        if seed == 3 and len(trained) == 4:
+            raise KeyboardInterrupt  # Colab disconnects during seed 3
+        return seed
+
+    quiet = lambda *_: None
+    kw = dict(train_kwargs={"epochs": 1}, train_fn=train_fn, log=quiet)
+    monkeypatch.setattr(detector, "predict_samples", lambda model, samples, **_: model)  # = the seed
+    monkeypatch.setattr(detector, "average_precision", lambda res, c: fake[res])
+    if True:
+        with pytest.raises(KeyboardInterrupt):
+            retrain.measure_noise_floor([], [], tmp_path, **kw)
+        floor, done, missing, note = retrain.noise_progress(tmp_path, retrain.recipe_of({"epochs": 1}))
+        assert floor is None and done == [0, 1, 2] and missing == [3, 4]
+        assert note.startswith("noise floor: 3 of 5 seeds measured")
+        # with 3 of 5 seeds the gate never promotes, and says why
+        clear_gain = {"overall": (0.08, 0.05, 0.11), "keys": (0.1, 0.05, 0.15)}
+        d = retrain.decide(clear_gain, 10, floor, CLASSES, floor_note=note)
+        assert not d["promote"] and any("3 of 5 seeds measured" in x for x in d["reasons"])
+        trained.clear()
+        data = retrain.measure_noise_floor([], [], tmp_path, **kw)
+        assert trained == [3, 4]  # only the missing seeds
+    assert data["floor"] == pytest.approx(2.5 * float(np.std(list(fake.values()), ddof=1)))
+    assert len(retrain.load_gold_log(tmp_path)) == 5  # each seed scored on gold once
+
+
+def test_old_three_seed_floor_is_topped_up(tmp_path):
+    (tmp_path / retrain.NOISE_FILE).write_text(json.dumps(
+        {"floor": 0.03, "gold_maps": [0.5, 0.52, 0.49], "date": "2026-11-13",
+         "recipe": {**retrain.recipe_of({"epochs": 1}), "seeds": [0, 1, 2]}}))
+    floor, done, missing, _ = retrain.noise_progress(tmp_path, retrain.recipe_of({"epochs": 1}))
+    assert floor is None and done == [0, 1, 2] and missing == [3, 4]
+    retrain.record_noise_seed(tmp_path, 3, 0.51, retrain.recipe_of({"epochs": 1}))
+    retrain.record_noise_seed(tmp_path, 4, 0.50, retrain.recipe_of({"epochs": 1}))
+    assert retrain.load_noise_floor(tmp_path) == pytest.approx(
+        2.5 * float(np.std([0.5, 0.52, 0.49, 0.51, 0.5], ddof=1)))
 
 
 def test_wear_warning_at_budget_not_before(tmp_path):

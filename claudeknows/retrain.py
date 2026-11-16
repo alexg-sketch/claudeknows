@@ -9,8 +9,9 @@ better:
   - the overall gold-set difference (paired, resampling whole videos/photos,
     5000 times) has a 95% range whose LOW end is above 0;
   - no object's low end is below -2 points;
-  - the overall gain beats the "noise floor" (how much gold mAP moves between
-    3 seeds of the same recipe, measured once with `noise-floor`);
+  - the overall gain beats the "noise floor" (2.5 x the standard deviation of gold
+    mAP over 5 seeds of the same recipe, measured once with `noise-floor`; each seed
+    is saved as soon as it is done, so a disconnect costs one training at most);
   - the gold set shows at least 5 different scenes (else: "not enough evidence").
 
 Everything is kept in one folder (Drive `claudeknows_models/`):
@@ -42,7 +43,8 @@ MIN_GOLD_SCENES = 5
 OBJECT_MARGIN = 0.02  # an object may not get worse by more than 2 points (low end of its range)
 GOLD_LOOK_BUDGET = 20  # after this many gate checks, warn that gold scores are getting optimistic
 REPLAY_MIN_SHARE = 0.5  # the original human/Open Images photos are at least half of training
-NOISE_SEEDS = (0, 1, 2)
+NOISE_SEEDS = (0, 1, 2, 3, 4)
+NOISE_SD_FACTOR = 2.5  # floor = 2.5 x standard deviation of the seeds' gold mAP
 INITS = ("coco", "current")
 CURRENT = "detector.pt"
 VERSIONS_FILE = "versions.json"
@@ -113,7 +115,7 @@ def gold_scene_count(gold_samps):
 
 
 def decide(diffs, n_scenes, floor, classes=OBJECT_NAMES, min_scenes=MIN_GOLD_SCENES,
-           margin=OBJECT_MARGIN):
+           margin=OBJECT_MARGIN, floor_note=None):
     """Promotion rule. `diffs` from `detector.paired_differences` (candidate - current).
 
     Returns {"promote": bool, "reasons": [plain-language reasons it was NOT promoted],
@@ -131,7 +133,7 @@ def decide(diffs, n_scenes, floor, classes=OBJECT_NAMES, min_scenes=MIN_GOLD_SCE
             reasons.append(f"not clearly better overall ({_pts(d)} points, range "
                            f"{_pts(lo)} to {_pts(hi)})")
         if floor is None:
-            reasons.append("no noise floor measured yet (run `retrain noise-floor` once)")
+            reasons.append(floor_note or "no noise floor measured yet (run `retrain noise-floor` once)")
         elif d <= floor:
             reasons.append(f"gain {_pts(d)} points is within the noise between seeds "
                            f"({100 * floor:.1f} points)")
@@ -184,14 +186,14 @@ class GoldGate:
         self.models_dir, self.classes, self.n, self.seed = Path(models_dir), classes, n, seed
         self.used_by = None
 
-    def check(self, name, current_results, candidate_results, n_scenes, floor):
+    def check(self, name, current_results, candidate_results, n_scenes, floor, floor_note=None):
         from .detector import paired_differences
         if self.used_by is not None:
             raise OneCandidateOnly(f"the gold set was already used this run (for {self.used_by}); "
                                    f"only one candidate per run may be compared on it")
         self.used_by = name
         diffs = paired_differences(current_results, candidate_results, self.classes, self.n, self.seed)
-        decision = decide(diffs, n_scenes, floor, self.classes)
+        decision = decide(diffs, n_scenes, floor, self.classes, floor_note=floor_note)
         decision["diffs"] = diffs
         o = decision["overall"]
         log_gold_check(self.models_dir, {
@@ -204,30 +206,88 @@ class GoldGate:
 
 # ------------------------------------------------------------------ noise floor
 
+def noise_floor_value(gold_maps, factor=NOISE_SD_FACTOR):
+    """2.5 x the sample standard deviation of the seeds' gold mAP (RESEARCH.md 2026-11-14).
+    Unlike max - min it does not grow when seeds are added."""
+    import numpy as np
+    return float(factor * np.std(np.asarray(gold_maps, dtype=float), ddof=1))
+
+
+def _recipe_core(recipe):
+    return {k: v for k, v in (recipe or {}).items() if k != "seeds"}
+
+
+def load_noise_data(models_dir):
+    """The saved per-seed measurements as {"recipe", "seeds": {seed: gold mAP}, "floor", "date"}.
+    A file from the old 3-seed rule (a list of gold mAPs) is read as seeds 0-2, so it is
+    topped up with the missing seeds rather than measured again. None if nothing saved."""
+    data = _read(Path(models_dir) / NOISE_FILE, None)
+    if data is None:
+        return None
+    if isinstance(data.get("gold_maps"), list):  # old format
+        seeds = data.get("recipe", {}).get("seeds", list(range(len(data["gold_maps"]))))
+        data = {"recipe": _recipe_core(data.get("recipe")), "date": data.get("date"),
+                "seeds": {str(k): float(m) for k, m in zip(seeds, data["gold_maps"])}}
+    data["recipe"] = _recipe_core(data.get("recipe"))
+    data.setdefault("seeds", {})
+    data["floor"] = (noise_floor_value(list(data["seeds"].values()))
+                     if all(str(k) in data["seeds"] for k in NOISE_SEEDS) else None)
+    return data
+
+
+def noise_progress(models_dir, recipe=None, seeds=NOISE_SEEDS, log=print):
+    """(floor or None, measured seeds, missing seeds, plain-language note).
+
+    Measurements made with different training settings do not count (the floor must be
+    measured again for the new recipe)."""
+    data = load_noise_data(models_dir)
+    if data is not None and recipe is not None and data["recipe"] != _recipe_core(recipe):
+        log("the noise floor was measured with different training settings: measure it again")
+        data = None
+    done = sorted(int(k) for k in (data or {}).get("seeds", {}) if int(k) in seeds)
+    missing = [s for s in seeds if s not in done]
+    floor = data["floor"] if data is not None and not missing else None
+    if floor is not None:
+        note = f"noise floor: {100 * floor:.1f} points ({len(done)} seeds)"
+    elif not done:
+        note = f"no noise floor measured yet (run `retrain noise-floor` once; {len(seeds)} trainings)"
+    else:
+        note = (f"noise floor: {len(done)} of {len(seeds)} seeds measured (the next "
+                f"`retrain noise-floor` trains only the missing ones)")
+    return floor, done, missing, note
+
+
+def record_noise_seed(models_dir, seed, gold_map, recipe):
+    """Save ONE seed's gold mAP straight away (atomic write) and log it as one gold use, so a
+    Colab disconnect loses at most the training that was running. Returns the saved data."""
+    d = Path(models_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    core = _recipe_core(recipe)
+    data = load_noise_data(d)
+    if data is None or data["recipe"] != core:
+        data = {"recipe": core, "seeds": {}}
+    data["seeds"][str(seed)] = float(gold_map)
+    data["date"] = date.today().isoformat()
+    log_gold_check(d, {"kind": "noise-floor", "candidate": f"seed {seed}", "verdict": None,
+                       "difference": None, "range": None, "gold_map": round(float(gold_map), 4)})
+    done = all(str(k) in data["seeds"] for k in NOISE_SEEDS)
+    data["floor"] = noise_floor_value(list(data["seeds"].values())) if done else None
+    _write(d / NOISE_FILE, data)
+    return data
+
+
 def record_noise_floor(models_dir, gold_maps, recipe):
-    """Save the noise floor (max - min gold mAP over seeds) and log each run as a gold use."""
-    gold_maps = [float(m) for m in gold_maps]
-    for i, m in enumerate(gold_maps):
-        log_gold_check(models_dir, {"kind": "noise-floor", "candidate": f"seed {recipe['seeds'][i]}",
-                                    "verdict": None, "difference": None, "range": None,
-                                    "gold_map": round(m, 4)})
-    data = {"floor": max(gold_maps) - min(gold_maps), "gold_maps": gold_maps,
-            "date": date.today().isoformat(), "recipe": recipe}
-    _write(Path(models_dir) / NOISE_FILE, data)
+    """Save several seeds at once (seeds from `recipe["seeds"]`, default 0, 1, ...)."""
+    seeds = recipe.get("seeds", list(range(len(gold_maps))))
+    data = None
+    for s, m in zip(seeds, gold_maps):
+        data = record_noise_seed(models_dir, s, m, recipe)
     return data
 
 
 def load_noise_floor(models_dir, recipe=None, log=print):
-    """The saved floor, or None if never measured (or measured with a different recipe)."""
-    data = _read(Path(models_dir) / NOISE_FILE, None)
-    if data is None:
-        return None
-    if recipe is not None:
-        old = {k: v for k, v in data["recipe"].items() if k != "seeds"}
-        if old != recipe:
-            log("the noise floor was measured with different training settings: measure it again")
-            return None
-    return data["floor"]
+    """The floor, or None if not (fully) measured or measured with a different recipe."""
+    return noise_progress(models_dir, recipe, log=log)[0]
 
 
 # ------------------------------------------------------------------ versions
@@ -363,12 +423,12 @@ def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="co
         summary.append("kept the current model: there is no gold set yet, so nothing can be "
                        "promoted automatically")
         return result
-    floor = load_noise_floor(d, recipe_of(train_kwargs, pretrained), log)
+    floor, _, _, floor_note = noise_progress(d, recipe_of(train_kwargs, pretrained), log=log)
     cur_model, classes = load_detector(current)
     cur_res = predict_samples(cur_model, gold_samps, tta=tta)
     cand_res = predict_samples(model, gold_samps, tta=tta)
     gate = gate or GoldGate(d, classes)
-    decision = gate.check(name, cur_res, cand_res, gold_scene_count(gold_samps), floor)
+    decision = gate.check(name, cur_res, cand_res, gold_scene_count(gold_samps), floor, floor_note)
     result["decision"] = decision
     if decision["promote"]:
         promote(d, name, log)
@@ -384,24 +444,31 @@ def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="co
 
 
 def measure_noise_floor(base, gold_samps, models_dir, *, gold_manifest=None, seeds=NOISE_SEEDS,
-                        pretrained=True, val_frac=0.15, train_kwargs=None, log=print):
-    """Train the current recipe (fresh start, original photos only) with several seeds, score
-    each on the gold set and save max - min as the noise floor. These models are never
-    promotion candidates and are not saved."""
+                        pretrained=True, val_frac=0.15, train_kwargs=None, train_fn=None, log=print):
+    """Train the current recipe (fresh start, original photos only) with each seed that is
+    still MISSING, score it on the gold set once and save it at once. When all seeds exist
+    the floor is 2.5 x their standard deviation. These models are never promotion
+    candidates and are not saved. `train_fn(seed)` -> model replaces the training (tests)."""
     from .detector import average_precision, predict_samples
     classes = OBJECT_NAMES
     train_kwargs = dict(train_kwargs or {})
-    maps = []
-    for seed in seeds:
-        model = _train(base, [], seed, None, pretrained, gold_manifest, train_kwargs, val_frac, log)[0]
+    recipe = {**recipe_of(train_kwargs, pretrained), "seeds": list(seeds)}
+    _, done, missing, _ = noise_progress(models_dir, recipe, seeds, log)
+    if done:
+        log(f"noise floor: seeds {done} already measured; training {missing or 'none'}")
+    for seed in missing:
+        if train_fn is not None:
+            model = train_fn(seed)
+        else:
+            model = _train(base, [], seed, None, pretrained, gold_manifest, train_kwargs, val_frac, log)[0]
         res = predict_samples(model, list(gold_samps))
         aps = [a for a in (average_precision(res, c) for c in classes) if a is not None]
-        maps.append(sum(aps) / len(aps) if aps else 0.0)
-        log(f"seed {seed}: gold mAP {100 * maps[-1]:.1f}%")
-    data = record_noise_floor(models_dir, maps, {**recipe_of(train_kwargs, pretrained),
-                                                 "seeds": list(seeds)})
-    log(f"noise floor: {100 * data['floor']:.1f} points (saved to {Path(models_dir) / NOISE_FILE})")
-    return data
+        m = sum(aps) / len(aps) if aps else 0.0
+        record_noise_seed(models_dir, seed, m, recipe)
+        log(f"seed {seed}: gold mAP {100 * m:.1f}% (saved)")
+    floor, _, _, note = noise_progress(models_dir, recipe, seeds, log)
+    log(note)
+    return load_noise_data(models_dir)
 
 
 # ------------------------------------------------------------------ command line
@@ -445,7 +512,7 @@ def main(argv=None):
     r.add_argument("--walks", default=None, help="folder of auto-labelled walks (task 26)")
     r.add_argument("--init", choices=INITS, default="coco")
     r.add_argument("--seed", type=int, default=0)
-    n = sub.add_parser("noise-floor", help="measure once: gold mAP spread over 3 seeds")
+    n = sub.add_parser("noise-floor", help="measure once: gold mAP spread over 5 seeds (trains only missing seeds)")
     _train_args(n)
     for name in ("rollback", "status"):
         s = sub.add_parser(name)

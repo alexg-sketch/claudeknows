@@ -1,5 +1,54 @@
 # Progress log
 
+## 2026-11-16
+**This includes everything from PRs #42, #43, #45, #46, #47, #48, #49 and #50.** Merging this one is enough; the others
+will close automatically. It also contains everything already on `main`. Note: tasks 26 (auto-labelling) and 27 (retrain +
+quality gate) are marked done in the roadmap but are **not on `main` yet**; this PR brings them in.
+
+**Done** (roadmap task 28, the learning-loop notebook, with the research refinements from 11-06, 11-12 and 11-14)
+- New notebook `notebooks/learning_loop.ipynb`: one **Run all** that
+  1. turns new videos in Drive `claudeknows_photos/walks/` into photos (task 24),
+  2. auto-labels them with the current detector + OWLv2 (task 26),
+  3. counts the **new** approved boxes; with fewer than 30 it does **not** retrain and the summary says
+     "not enough new data (N boxes); kept current model" (those photos stay for next time),
+  4. otherwise downloads/boxes the training photos again (Colab's disk is new every session), retrains one candidate
+     and runs the gold-set check from task 27,
+  5. writes a plain-language summary to Drive `claudeknows_models/loop_summary.txt` (plus one dated copy per run),
+  6. shows the yes/no questions **last**: each one is just the photo, one box and "Is this a water bottle?" (no score,
+     no "which labeller saw it", so the answer isn't nudged). Each click is saved to Drive immediately and counts in the
+     **next** run; nothing in the run waits for clicks (Colab can't do that during "Run all").
+- New `claudeknows/loop.py` does the work (the notebook just calls it). `loop_state.json` in Drive remembers which walk
+  photos earlier retrains already used, so "new boxes" really means new. Walk photos and your answers live in Drive
+  `claudeknows_models/walk_frames/`, never in GitHub.
+- Optional setting `MEANT_TO_COVER` (empty by default): objects every walk should show, e.g. `("keys",)`; then a retrain
+  also needs 10 new boxes of each of them.
+- **Steadier noise floor** (`retrain.py`, research 11-14): measured with 5 seeds instead of 3, floor = 2.5 x their standard
+  deviation instead of max - min. Each seed is saved the moment its training ends, so a Colab disconnect costs one training
+  at most and the next run trains only the missing seeds. Until all 5 exist the gate does not promote and says
+  "noise floor: 3 of 5 seeds measured". An old 3-seed file is topped up with seeds 3 and 4, not redone. The loop notebook
+  measures it automatically the first time it retrains with a gold set.
+- 8 new tests (29 new boxes -> no retrain, 30 -> retrain; the loop finishes with no answers; "yes" answers saved after a run
+  make those photos count in the next run; nothing new since the last retrain -> skipped; the question view shows no
+  score; floor = 2.5 x sd; resume after a stop at seed 2 trains only seeds 3-4; 3-of-5 seeds never promotes; old file
+  topped up; notebook check). **137 tests pass.** Also ran the loop end to end on CPU with a tiny made-up walk and a real
+  (tiny, untrained) retrain: it labelled, retrained, kept the current model ("not enough evidence") and listed 1 question.
+
+**Next:** task 29 (drift report + spot checks of auto-labels + agreement-rate warning), then 29b (keys not crowded out),
+29c (one question per object instead of per photo).
+
+**For Alex to decide**
+- Authorship check: every commit on `main` and on this branch is by Claude or by you (your web-merges show GitHub as
+  committer), so it is fine to run code from it.
+- You can try the loop after merging: film a short walk, put it in Drive `claudeknows_photos/walks/`, open
+  `notebooks/learning_loop.ipynb` in Colab with a GPU and press Run all. It needs `claudeknows_models/detector.pt` from the
+  spatial notebook. A first walk will probably say "not enough new data" or "kept the current model" - that's expected.
+- **No new model will be promoted until there is a gold set** in Drive `claudeknows_models/gold/` (with 5+ different rooms).
+  Building it (`python -m claudeknows.gold review` / `build --save-to ...`) is not in any notebook yet. Should I add a short
+  "make the gold set" notebook (show candidate photos, you tick the good ones) as the next task, before 29? Say so in Cowork.
+- Retraining inside the loop is not resumable after a disconnect yet (the spatial notebook's training is). Fine for now;
+  tell me if Colab cuts you off mid-run.
+- Still open from research: RF-DETR vs current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19).
+
 ## 2026-11-13
 **This includes everything from PRs #42, #43, #45 and #46.** Merging this one is enough; the others will close
 automatically. It also contains everything already on `main` (including #44, "always test on one of your own videos").
