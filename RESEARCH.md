@@ -3,6 +3,82 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-17
+
+**Summary.** Nine pull requests are open. #51 (task 28, the learning-loop notebook) already contains every other open one
+(#42, #43, #45-#50), so I started from #51. Next to be coded are tasks 29, 29b and 29c. Today I looked at **what happens before
+each loop retrain**, now that `loop.py` exists. Colab's disk is new every session, so `prepare_training_photos` rebuilds the
+original training photos from scratch every time a retrain happens: it streams the Open Images label, box and metadata files
+(about 5 GB together: 2.7 GB labels, the v6 box file and the metadata file for credits), downloads ~1,000 photos again, and runs
+OWLv2 twice over all of them (`autobox run` + `fill`). That costs time on a free GPU session before training even starts. It also
+means **the "original" half of every retrain is a slightly different data set each time**: `_save_whole` quietly skips any photo
+that times out and the next candidate fills its place, and OWLv2 boxes near the 0.3 / 0.4 cut-offs can flip between runs (fp16 /
+GPU type, see sources), which also moves photos between the train and validation splits. The gate's noise floor (task 27/28) only
+measures seed-to-seed spread on **one** data set; Bouthillier et al. (MLSys 2021) found that data-sampling variance is a large
+source of variance in benchmark results, often bigger than initialisation, so a "gain" could partly be data reshuffling the floor
+never measured. Colab's own FAQ also warns that Drive operations time out on folders with very many files, and the standard advice
+is to keep a dataset in Drive as one archive and copy it to local disk. **One roadmap change:** new task 29d, freeze the original
+training set once as a single archive in Drive and reuse it. Nothing new on detectors (still no new Apache-2.0 release found for
+Nov 2026; RF-DETR Nano-Large remains the open option, YOLO26 is AGPL) or depth. arxiv.org and several paper sites were not
+reachable from this session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Freeze the original training photos once in Drive and reuse them in every retrain (new task 29d; small-medium effort, low risk).**
+- What: the first time the loop retrains, build the original set as today, then save it to Drive
+  `claudeknows_models/training_set/` as ONE uncompressed `.tar` (JPEGs don't compress further) plus `manifest.json`: every file
+  path with its sha256, the `boxes.json` files, counts per object and per source (Open Images / own footage / negatives), date,
+  the git commit and the settings used (cap 300, negatives 120, OWLv2 thresholds 0.3 / 0.4). Write to a temporary name, then
+  rename, so a disconnect never leaves half a snapshot. Every later retrain copies the one tar to local disk, unpacks it into
+  `root`, checks the hashes and skips download / import / auto-boxing completely.
+- When to rebuild: only when Alex's own-footage folders (`claudeknows_photos/<object>/`, `together/`, `empty/`, not `walks/`)
+  have changed (compare a list of file names + sizes stored in the manifest), when a hash check fails, or when the settings above
+  change. Say so in the summary: "training photos: snapshot ts-2026-11-20 (1,034 photos) reused" or "rebuilt: 3 new videos in
+  claudeknows_photos/keys".
+- Why here: (a) **time** — every retrain currently re-streams ~5 GB of CSVs, re-downloads the photos and runs OWLv2 twice; my rough
+  estimate is 15-30 minutes of a free Colab session, and longer sessions are more likely to be cut off (Google does not publish
+  limits; third-party guides say up to ~12 h, often less). (b) **fair gate** — with a fixed set, the candidate's training data
+  differs from the previous candidate's only by the new self-labelled walk frames, which is exactly what the gate is meant to
+  judge, and the validation split used for early stopping and score cut-offs (23m) stays the same. (c) **Drive** — one large file
+  instead of ~1,000 small ones avoids Drive's many-files timeouts.
+- Make the noise floor follow it: add the snapshot id (first 12 hex characters of the manifest's sha256) to
+  `retrain.recipe_of`, so a rebuilt snapshot triggers the existing "measured with different training settings: measure it again"
+  path, and save `training_set` in each candidate checkpoint and in `versions`. Note in the summary that the very first model
+  (from the spatial notebook) was trained on its own download, so the first comparison is not yet like-for-like.
+- How: own code in `loop.py` (`prepare_training_photos(root, photos_dir, snapshot_dir=None, ...)`), standard library only
+  (`tarfile`, `hashlib`, `json`, `os.replace`). Gold photos are still removed later by `retrain._data` as today; the snapshot stays
+  in Drive only, never in git. Tests (CPU, fake `run` function that records commands and writes a few tiny files): the first call
+  builds and writes tar + manifest; a second call into an empty `root` with the snapshot runs no download/autobox command and
+  restores identical files; a corrupted file in the snapshot triggers a rebuild with a message; adding a file to the own-footage
+  folder triggers a rebuild; a different snapshot id changes `recipe_of`.
+- Size: ~1,000-1,500 JPEGs at most 960 px, roughly 0.2-0.4 GB; fine for a free Drive (15 GB). Licence: own code; Open Images photos
+  stay CC BY with the credits file inside the snapshot.
+- Expected gain: shorter loop runs and fewer runs lost to disconnects; a gate whose noise floor matches what actually changes
+  between candidates. No change to the model or to the 30% / replay rules.
+
+### Considered but not recommended
+- **Making the loop's retrain resumable after a disconnect (task 23n already has `--resume`):** on 11-16 the dev routine asked Alex
+  to say if Colab cuts him off. With the snapshot, a lost run is cheaper to repeat; leave it to Alex's answer.
+- **Packing walk frames into archives too:** they are already one folder per walk (~240 frames at most), well below the sizes where
+  Drive times out. Revisit if a walk folder grows past a few thousand files.
+- **Running OWLv2 in fp32 / fixed GPU type to make boxes repeatable:** the snapshot removes the need, since boxes are made once.
+- **DVC / lakeFS-style dataset versioning tools:** too heavy for one notebook; a tar + manifest with hashes gives the same guarantee here.
+- **New detectors / depth:** nothing new under Apache-2.0 in Nov 2026. YOLO26 is AGPL.
+
+### For Alex to decide
+- Nothing new today. Still open: whether to add a "make the gold set" notebook before task 29 (asked in PR #51), fresh gold photos
+  when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an
+  optional third labeller (11-07).
+
+### Sources
+- Bouthillier et al., Accounting for Variance in Machine Learning Benchmarks (MLSys 2021): https://proceedings.mlsys.org/paper_files/paper/2021/hash/0184b0cd3cfb185989f858a1d9f5c1eb-Abstract.html , https://arxiv.org/abs/2103.03098
+- Colab FAQ (Drive timeouts with many files, limits not published): https://research.google.com/colaboratory/faq.html
+- Zip-on-Drive, copy-then-unpack practice for Colab: https://forums.fast.ai/t/how-to-work-fast-with-files-on-google-drive/43011 , https://discuss.pytorch.org/t/google-colab-dataset-uploading/117141
+- Colab free-tier limits overview (third-party, unofficial): https://www.hivenet.com/post/google-colaboratory-gpu-complete-guide-to-free-cloud-gpu-access-and-limitations
+- Floating-point non-determinism on GPUs (why repeated OWLv2 runs can differ near a cut-off): https://arxiv.org/pdf/2408.05148 , https://arxiv.org/html/2506.09501v2
+- Experience replay in continual learning (the fixed "original" half of each retrain): https://arxiv.org/pdf/1811.11682
+- Detector licences: https://cdn.jsdelivr.net/gh/roboflow/rf-detr@develop/README.md , https://learnopencv.com/yolov26-real-time-deployment/ , https://lightly.ai/blog/best-ultralytics-alternatives-in-2026
+
 ## 2026-11-16
 
 **Summary.** Seven pull requests are open. #49 (research 11-15) already contains #48, #47, #46, #45, #43 and #42, so I started
