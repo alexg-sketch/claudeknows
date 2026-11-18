@@ -22,6 +22,16 @@ Rules, in order (RESEARCH.md 2026-10-21, 2026-11-05, 2026-11-06):
    proposed boxes (its box-head loss on them, highest first) and capped at 20.
    The number only orders the list; nothing is deleted because of it.
 
+6. Spot checks (task 29, RESEARCH.md 2026-11-12): `AUDIT_PER_WALK` agreed, steady
+   boxes are picked at random (seeded by the walk name) and mixed into the review
+   batch as ordinary-looking questions (`"why": "audit"`). They count toward the cap
+   of 20 but never hold a frame back; "no" removes that box from the frame's labels.
+   Their answers measure how often the ACCEPTED auto-labels are wrong (`drift.py`).
+
+Per walk, the per-object counts of agreed / detector-only / OWLv2-only boxes
+(before the steadiness rule) are saved in `walkstats.json`; the drift report turns
+them into an agreement rate per object (RESEARCH.md 2026-11-15).
+
 Frames where nobody found anything confident are not used (they might still
 hide an object both missed). Self-labelled frames may make up at most
 `MAX_SELF_SHARE` (30%) of the training photos (`cap_self_share`).
@@ -37,6 +47,7 @@ are never committed (the repo is public).
 import argparse
 import json
 import random
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image
@@ -56,6 +67,9 @@ MAX_SELF_SHARE = 0.3
 LOW_SCORE = 0.05  # detector boxes below this are not even looked at
 LABELS_FILE = "selflabels.json"
 REVIEW_FILE = "review.json"
+STATS_FILE = "walkstats.json"
+AUDIT_PER_WALK = 3
+AUDIT = "audit"  # `why` of a spot-check question
 SELF = "self"  # `by` of a self-labelled box
 
 TRAIN, HELD, EMPTY = "train", "held", "empty"
@@ -162,13 +176,14 @@ def _frames(walk_dir):
 
 
 def label_walk(walk_dir, det, owl, det_cut, owl_cut=OWL_THRESHOLD, loss_fn=None,
-               max_questions=MAX_QUESTIONS, log=print):
+               max_questions=MAX_QUESTIONS, audit_per_walk=AUDIT_PER_WALK, log=print):
     """Auto-label one walk folder (frames from `walks.import_walks`).
 
     det(image) -> detector boxes (low cut-off, e.g. `detect(model, im, min_score=LOW_SCORE)`),
     owl(image, labels) -> OWLv2 boxes, det_cut(label) -> detector cut-off,
     loss_fn(image, boxes) -> disagreement number for ordering questions (None = no ordering).
-    Writes `selflabels.json` and `review.json`; returns the counts per rule.
+    audit_per_walk: agreed, steady boxes to spot-check (task 29; 0 = none).
+    Writes `selflabels.json`, `review.json` and `walkstats.json`; returns the counts per rule.
     """
     walk_dir = Path(walk_dir)
     frames = _frames(walk_dir)
@@ -178,6 +193,14 @@ def label_walk(walk_dir, det, owl, det_cut, owl_cut=OWL_THRESHOLD, loss_fn=None,
             im = im.convert("RGB")
             per_frame.append(agree(det(im), owl(im, list(OBJECT_NAMES)), det_cut, owl_cut))
     flags = steady([a for a, _ in per_frame])
+    per_object = {c: {"agreed": 0, "detector_only": 0, "owlv2_only": 0} for c in OBJECT_NAMES}
+    for agreed_boxes, single in per_frame:  # before the steadiness rule
+        for b in agreed_boxes:
+            per_object.setdefault(b["label"], {"agreed": 0, "detector_only": 0, "owlv2_only": 0})
+            per_object[b["label"]]["agreed"] += 1
+        for b in single:
+            per_object.setdefault(b["label"], {"agreed": 0, "detector_only": 0, "owlv2_only": 0})
+            per_object[b["label"]][f"{b['seen_by']}_only"] += 1
 
     labels, questions = {}, []
     stats = {"frames": len(frames), "agreed": 0, "unsteady_dropped": 0, "unsteady_asked": 0,
@@ -211,22 +234,41 @@ def label_walk(walk_dir, det, owl, det_cut, owl_cut=OWL_THRESHOLD, loss_fn=None,
                               "score": round(q["score"], 3), "why": q["why"]})
         labels[p.name] = entry
 
+    # spot checks: a seeded random pick of accepted boxes, the same on every rerun
+    pool = [(name, i) for name, e in sorted(labels.items()) for i in range(len(e["boxes"]))]
+    rng = random.Random(f"audit:{walk_dir.name}")
+    picks = sorted(rng.sample(pool, min(audit_per_walk, len(pool), max_questions)))
+    audits = []
+    for k, (name, i) in enumerate(picks):
+        b = labels[name]["boxes"][i]
+        qid = f"{walk_dir.name}:a{k}"
+        labels[name].setdefault("audit", []).append(qid)
+        audits.append({"id": qid, "frame": name, "label": b["label"], "box": b["box"],
+                       "score": b["score"], "why": AUDIT})
+
     if loss_fn is not None:
         for q in questions:
             with Image.open(walk_dir / q["frame"]) as im:
                 q["disagreement"] = round(loss_fn(im.convert("RGB"), [q]), 4)
         questions.sort(key=lambda q: -q["disagreement"])
-    stats["questions_over_cap"] = max(0, len(questions) - max_questions)
-    questions = questions[:max_questions]  # the rest stay unanswered: their frames are held back
+    room = max_questions - len(audits)
+    stats["questions_over_cap"] = max(0, len(questions) - room)
+    questions = questions[:room]  # the rest stay unanswered: their frames are held back
+    for q in audits:  # mixed in at random places, not ordered by disagreement
+        questions.insert(rng.randint(0, len(questions)), q)
+    stats["audits"] = len(audits)
+    stats["per_object"] = per_object
     for entry in labels.values():
         entry["status"] = _status(entry)
     stats.update(_status_counts(labels))
     (walk_dir / LABELS_FILE).write_text(json.dumps(labels, indent=0, sort_keys=True))
     (walk_dir / REVIEW_FILE).write_text(json.dumps(questions, indent=1))
+    (walk_dir / STATS_FILE).write_text(json.dumps(stats, indent=1, sort_keys=True))
     log(f"{walk_dir.name}: {stats['frames']} frames, {stats['agreed']} agreed steady boxes, "
         f"{stats['unsteady_dropped']} unsteady dropped, {stats['unsteady_asked']} unsteady + "
         f"{stats['single_asked']} one-labeller boxes to ask about ({len(questions)} questions"
         + (f", {stats['questions_over_cap']} over the cap of {max_questions}" if stats["questions_over_cap"] else "")
+        + (f", {len(audits)} of them spot checks" if audits else "")
         + f"); frames: {stats[TRAIN]} for training, {stats[HELD]} held back, {stats[EMPTY]} empty")
     return stats
 
@@ -249,6 +291,16 @@ def load_labels(walk_dir):
     return json.loads(f.read_text()) if f.exists() else {}
 
 
+def load_stats(walk_dir):
+    f = Path(walk_dir) / STATS_FILE
+    return json.loads(f.read_text()) if f.exists() else None
+
+
+def pending_ids(entry):
+    """Question ids of one frame still waiting for a yes/no (review + spot checks)."""
+    return [q for q in entry["open"] if q] + list(entry.get("audit", []))
+
+
 def load_questions(walk_dir):
     f = Path(walk_dir) / REVIEW_FILE
     return json.loads(f.read_text()) if f.exists() else []
@@ -257,7 +309,9 @@ def load_questions(walk_dir):
 def apply_answers(walk_dir, answers, log=print):
     """Record Alex's yes/no answers: {question id: True/False}. "yes" adds the box
     as a label, "no" removes the question (that spot is not the object). A frame
-    becomes trainable once all its open questions are answered. Returns status counts."""
+    becomes trainable once all its open questions are answered. A spot-check
+    (audit) question never holds a frame: "yes" keeps its box, "no" removes it.
+    Returns status counts."""
     walk_dir = Path(walk_dir)
     labels = load_labels(walk_dir)
     questions = {q["id"]: q for q in load_questions(walk_dir)}
@@ -267,10 +321,18 @@ def apply_answers(walk_dir, answers, log=print):
             log(f"unknown question {qid}, skipped")
             continue
         entry = labels[q["frame"]]
+        if qid in entry.get("audit", []):
+            entry["audit"].remove(qid)
+            entry["answered"].append({"id": qid, "yes": bool(yes), "audit": True,
+                                      "label": q["label"]})
+            if not yes:
+                entry["boxes"] = [b for b in entry["boxes"]
+                                  if not (b["label"] == q["label"] and list(b["box"]) == list(q["box"]))]
+            continue
         if qid not in entry["open"]:
             continue
         entry["open"].remove(qid)
-        entry["answered"].append({"id": qid, "yes": bool(yes)})
+        entry["answered"].append({"id": qid, "yes": bool(yes), "label": q["label"]})
         if yes:
             entry["boxes"].append({"label": q["label"], "box": q["box"], "score": q["score"],
                                    "by": "alex"})
@@ -303,16 +365,56 @@ def self_samples(root, gold=None, log=print):
     return out
 
 
+def _rarest_groups(extra, seed):
+    """Self-labelled frames grouped by the rarest object among their boxes (rarity =
+    self-labelled boxes of that object in `extra`), rarest group first, each shuffled."""
+    totals = Counter(l for s in extra for l, _ in s.boxes)
+    groups = {}
+    for s in extra:
+        labels = {l for l, _ in s.boxes}
+        key = min(labels, key=lambda l: (totals[l], l)) if labels else ""
+        groups.setdefault(key, []).append(s)
+    rng = random.Random(seed)
+    out = []
+    for key in sorted(groups, key=lambda k: (totals.get(k, 0), k)):
+        g = list(groups[key])
+        rng.shuffle(g)
+        out.append(g)
+    return out
+
+
+def self_box_usage(extra, picked):
+    """Plain-language line: self-labelled boxes used per object, e.g.
+    "self-labelled boxes used: keys 40 of 40, water_bottle 150 of 300, shoes 150 of 620"."""
+    have = Counter(l for s in extra for l, _ in s.boxes)
+    used = Counter(l for s in picked for l, _ in s.boxes)
+    return "self-labelled boxes used: " + ", ".join(
+        f"{c} {used.get(c, 0)} of {have.get(c, 0)}" for c in OBJECT_NAMES)
+
+
 def cap_self_share(base, extra, max_share=MAX_SELF_SHARE, seed=0, log=print):
-    """base + a random pick of `extra` (self-labelled) so that self-labelled photos
-    are at most `max_share` of the result. Whole walks are not favoured: frames are
-    picked at random with a fixed seed."""
+    """base + a pick of `extra` (self-labelled) so that self-labelled photos are at most
+    `max_share` of the result.
+
+    When frames must be dropped, the rarest object comes first (task 29b, RESEARCH.md
+    2026-11-15): each frame joins the group of the rarest object it shows, each group is
+    shuffled with the seed, and frames are taken round-robin from the groups, rarest group
+    first. Otherwise keys (which the labellers find least often) would keep being crowded
+    out by shoe and bottle frames, walk after walk. Under the limit everything is kept."""
     limit = int(max_share / (1 - max_share) * len(base)) if max_share < 1 else len(extra)
     picked = list(extra)
     if len(picked) > limit:
-        picked = random.Random(seed).sample(picked, limit)
+        groups = _rarest_groups(extra, seed)
+        picked, depth = [], 0
+        while len(picked) < limit:
+            for g in groups:
+                if depth < len(g) and len(picked) < limit:
+                    picked.append(g[depth])
+            depth += 1
         log(f"self-labelled frames capped at {limit} of {len(extra)} "
-            f"({int(max_share * 100)}% of training)")
+            f"({int(max_share * 100)}% of training), rarest object first")
+    if extra and hasattr(extra[0], "boxes"):
+        log(self_box_usage(extra, picked))
     return list(base) + picked
 
 
@@ -350,7 +452,7 @@ def main(argv=None):
     elif a.cmd == "questions":
         for d in walk_dirs(root):
             for q in load_questions(d):
-                if any(q["id"] in e["open"] for e in load_labels(d).values()):
+                if any(q["id"] in pending_ids(e) for e in load_labels(d).values()):
                     print(f"{q['id']}  {q['frame']}: is this a {q['label']}? ({q['why']}, "
                           f"score {q['score']})")
     else:

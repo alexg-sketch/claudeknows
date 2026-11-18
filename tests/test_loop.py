@@ -8,13 +8,14 @@ from tests.test_selflabel import BOTTLE, SHOE, cut, make_walk, scripted
 QUIET = lambda *_: None  # noqa: E731
 
 
-def _label_fn(n, shoe_frames):
+def _label_fn(n, shoe_frames, audits=0):
     """Fake labellers: a steady bottle both see in every frame; a shoe only OWLv2 sees
     in `shoe_frames` (so those frames become questions and are held back)."""
     det = [[{"label": "water_bottle", "score": 0.9, "box": BOTTLE}] for _ in range(n)]
     owl = [[("water_bottle", 0.8, BOTTLE)] + ([("shoes", 0.7, SHOE)] if i in shoe_frames else [])
            for i in range(n)]
-    return lambda d: sl.label_walk(d, scripted(det), scripted(owl), cut, 0.3, log=QUIET)
+    return lambda d: sl.label_walk(d, scripted(det), scripted(owl), cut, 0.3, audit_per_walk=audits,
+                                   log=QUIET)
 
 
 def test_should_retrain_29_skipped_30_retrains():
@@ -62,6 +63,24 @@ def test_loop_finishes_without_answers_and_answers_count_next_run(tmp_path):
     out = loop.run_loop(tmp_path / "walks", models, label_fn=None, **kw)
     assert not out["retrained"] and calls == [40]
     assert any(l.startswith("not enough new data (0 boxes") for l in out["summary"])
+
+
+def test_loop_spot_checks_and_drift_report(tmp_path):
+    models, frames = tmp_path / "models", tmp_path / "models" / "walk_frames"
+    make_walk(frames, n=6, name="walk1")
+    kw = dict(import_fn=lambda *_: [], log=QUIET, today=date(2026, 11, 18))
+    out = loop.run_loop(tmp_path / "walks", models, label_fn=_label_fn(6, {2}, audits=3), **kw)
+    whys = sorted(q["why"] for q in out["questions"])
+    assert whys.count(sl.AUDIT) == 3 and len(whys) == 4
+    assert any(l.startswith("Drift report") for l in out["summary"])
+    assert "3 of them spot checks" not in out["summary"]  # the label line stays short
+    # a "no" on a spot check removes the box and is logged
+    audit = next(q for q in out["questions"] if q["why"] == sl.AUDIT)
+    loop.answer(frames, audit["id"], False, log=QUIET)
+    out = loop.run_loop(tmp_path / "walks", models, label_fn=None, **kw)
+    assert any("1 of 1 spot-checked auto-labels wrong" in l for l in out["summary"])
+    assert len(out["questions"]) == 3
+    assert (models / "drift_history.json").exists()
 
 
 def test_new_walk_waits_without_a_current_model(tmp_path):

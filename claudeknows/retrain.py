@@ -145,6 +145,13 @@ def decide(diffs, n_scenes, floor, classes=OBJECT_NAMES, min_scenes=MIN_GOLD_SCE
     return {"promote": not reasons, "reasons": reasons, "overall": overall}
 
 
+def gold_map(results, classes=OBJECT_NAMES):
+    """Mean of the per-object AP@0.5 (objects without boxes left out), or None."""
+    from .detector import average_precision
+    aps = [a for a in (average_precision(results, c) for c in classes) if a is not None]
+    return round(sum(aps) / len(aps), 4) if aps else None
+
+
 def promotion_message(decision):
     """Honest headline: a promotion's gain is the LOW end of the range ("at least")."""
     o = decision["overall"]
@@ -374,6 +381,7 @@ def recipe_of(train_kwargs, pretrained=True):
 def _train(base, extra, seed, init_state, pretrained, gold_manifest, train_kwargs, val_frac, log):
     from .detection_data import scene_groups, split_detection
     from .detector import best_thresholds, train_detector
+    from .selflabel import self_box_usage
     fit, val = (split_detection(base, val_frac, seed, scenes=scene_groups(base), log=log)
                 if val_frac > 0 else (list(base), []))
     n_orig = len(fit)
@@ -384,6 +392,7 @@ def _train(base, extra, seed, init_state, pretrained, gold_manifest, train_kwarg
                                  **train_kwargs)
     cuts = best_thresholds(model, val) if val else {}  # cut-offs from validation, never gold
     model.thresholds = cuts
+    stats["self_box_usage"] = self_box_usage(extra, fit[n_orig:]) if extra else None
     return model, hist, stats, cuts, len(fit), len(fit) - n_orig
 
 
@@ -408,8 +417,11 @@ def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="co
         "recipe": recipe_of(train_kwargs, pretrained), "self_labelled": n_self, "trained_on": n_fit})
     summary = [f"candidate {name}: trained on {n_fit} photos ({n_self} self-labelled), "
                f"started from {'COCO weights (fresh)' if init == 'coco' else 'the current model'}"]
+    if stats.get("self_box_usage"):
+        summary.append(stats["self_box_usage"])
     created = (gold_manifest or {}).get("created")
-    result = {"name": name, "promoted": False, "decision": None, "summary": summary}
+    result = {"name": name, "promoted": False, "decision": None, "summary": summary,
+              "gold": None, "gold_created": created}
     if current is None:
         promote(d, name, log)
         _set_verdict(d, name, "first version")
@@ -430,6 +442,8 @@ def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="co
     gate = gate or GoldGate(d, classes)
     decision = gate.check(name, cur_res, cand_res, gold_scene_count(gold_samps), floor, floor_note)
     result["decision"] = decision
+    result["gold"] = {"current": gold_map(cur_res, classes), "candidate": gold_map(cand_res, classes),
+                      "current_name": load_versions(d).get("current")}
     if decision["promote"]:
         promote(d, name, log)
         result["promoted"] = True

@@ -62,7 +62,8 @@ def test_label_walk_rules_and_answers(tmp_path):
     det = [[bottle_d], [bottle_d], [bottle_d, shoe_d], [bottle_d],
            [bottle_d, {"label": "keys", "score": 0.1, "box": SHOE}]]  # low-score keys: ignored
     owl = [[bottle_o]] * 5
-    stats = sl.label_walk(d, scripted(det), scripted(owl), cut, 0.3, log=lambda *_: None)
+    stats = sl.label_walk(d, scripted(det), scripted(owl), cut, 0.3, audit_per_walk=0,
+                          log=lambda *_: None)
     assert stats["agreed"] == 5 and stats["single_asked"] == 1
     labels = sl.load_labels(d)
     # frame with one agreed box + one detector-only confident box is held back

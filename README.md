@@ -109,6 +109,8 @@ Open `web/spatial.html` for a one-page guide. In short:
   `notebooks/learning_loop.ipynb`. It labels the walk, retrains only when there is enough new data,
   keeps a new model only if it beats the current one on the checked gold photos, writes a summary to
   `claudeknows_models/loop_summary.txt`, and ends with yes/no questions (answers count next run).
+  The summary includes a drift report (`claudeknows/drift.py`): gold scores across runs, a few random
+  spot checks of accepted auto-labels per walk (how often they are wrong), and early warnings.
 
 ## Tests
 

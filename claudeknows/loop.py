@@ -6,7 +6,8 @@ Order of one run (the notebook `notebooks/learning_loop.ipynb` calls `run_loop`)
   3. count the NEW training-approved boxes (agreed + steady, or "yes" answers from
      earlier walks). Too few -> no retraining this time ("not enough new data");
   4. otherwise retrain one candidate and run the gold-set gate (task 27);
-  5. write a plain-language summary to Drive and list the review questions LAST.
+  5. add the drift report (task 29, `drift.py`), write a plain-language summary to
+     Drive and list the review questions LAST.
 
 Alex's yes/no answers are NOT waited for: in Colab "Run all" button clicks are only
 handled after every cell has finished, so nothing in this run may depend on them.
@@ -18,6 +19,8 @@ Everything lives in Drive (`claudeknows_models/`), never in the public repo:
   walk_frames/            frames + selflabels.json + review.json per walk
   loop_state.json         which walk frames earlier retrains already used
   loop_summary.txt        the latest summary (plus loop_summary_YYYY-MM-DD.txt per run)
+  drift_history.json      one row per run (gold scores), for the drift report (task 29)
+  drift_report.txt        the latest drift report; audit.json = spot-check answers
 """
 import json
 from collections import Counter
@@ -26,7 +29,7 @@ from pathlib import Path
 
 from .objects import OBJECT_NAMES
 from .selflabel import (HELD, LABELS_FILE, TRAIN, apply_answers, load_labels, load_questions,
-                        walk_dirs)
+                        pending_ids, walk_dirs)
 
 MIN_NEW_BOXES = 30  # fewer new approved boxes than this in total -> no retrain
 MIN_NEW_PER_OBJECT = 10  # ... or fewer than this for an object listed in MEANT_TO_COVER
@@ -105,7 +108,7 @@ def open_questions(walks_root):
     Only what the question view needs is used: photo, box, object (no score, no labeller)."""
     out = []
     for d in walk_dirs(walks_root):
-        open_ids = {q for e in load_labels(d).values() for q in e["open"] if q}
+        open_ids = {q for e in load_labels(d).values() for q in pending_ids(e)}
         for q in load_questions(d):
             if q["id"] in open_ids:
                 out.append({**q, "walk_dir": str(d)})
@@ -190,6 +193,9 @@ def run_loop(walks_src, models_dir, *, label_fn=None, retrain_fn=None, frames_di
             mark_used(models_dir, keys)
             lines += result.get("summary", [])
 
+    from .drift import record_run, report
+    record_run(models_dir, go, result, today=today)
+    lines += report(frames_dir, models_dir)
     qs = open_questions(frames_dir)
     lines.append(f"{len(qs)} question{'s' if len(qs) != 1 else ''} waiting for you (below); answers "
                  "are saved at once and will be used next time" if qs else "no questions waiting")
