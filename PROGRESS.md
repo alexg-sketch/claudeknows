@@ -1,5 +1,48 @@
 # Progress log
 
+## 2026-11-18
+**This includes everything from PRs #42, #43, #45, #46, #47, #48, #49, #50, #51, #52 and #53.** Merging this one is enough;
+the others will close automatically. It also contains everything already on `main`. Note: tasks 26, 27 and 28 are marked
+done in the roadmap but are **not on `main` yet**; this PR brings them in.
+
+**Done** (roadmap tasks 29 and 29b, with the research refinements from 11-12 and 11-15)
+- **Spot checks of the automatic labels** (`selflabel.py`): each walk, 3 boxes that both labellers agreed on are picked at
+  random (the same 3 every time for the same walk) and put among your yes/no questions. They look exactly like the other
+  questions. They never hold a photo back. "No" removes that box from the photo's labels, "yes" keeps it. They count toward
+  the limit of 20 questions per walk. Your answers are logged in Drive `claudeknows_models/audit.json`.
+  Why: until now nobody ever looked at the labels the two labellers agreed on, so a steady shared mistake (say, both calling
+  a thermos a water bottle) would never show up. After about 7 walks there is a first honest estimate of how often the
+  automatic labels are wrong.
+- **Drift report** (new `claudeknows/drift.py`), added to every loop summary and saved as `drift_report.txt`. It shows:
+  - gold-set scores of the current model and each candidate, run by run (`drift_history.json`);
+  - for each object, how many spot checks were wrong, with a 95% range. It warns when the automatic labels are clearly
+    wrong more than 1 in 20 times, and says "too few checks yet" under 20 checks;
+  - the "no" share of the ordinary questions, kept separate (those are the uncertain boxes, not the accepted ones);
+  - for each object, how often the detector and OWLv2 agree on a walk. It warns only if the last 3 walks are each 15+
+    points below the earlier walks (walks with fewer than 10 boxes of that object are ignored), a hint that new rooms or
+    lighting are harder;
+  - self-labelled boxes per object in the latest walks. It warns if an object disappears for 3 walks in a row.
+  It never blocks anything. The gold-set check is still the only thing that decides on a new model.
+- **Keys first when self-labels are capped** (task 29b, `cap_self_share`): when there are more self-labelled walk photos
+  than the 30% limit allows, photos with the rarest object (probably keys) are kept first, instead of a random pick that
+  would mostly keep shoes and bottles. The summary now says e.g. "self-labelled boxes used: keys 40 of 40, water_bottle 150
+  of 300, shoes 150 of 620". Under the limit nothing changes.
+- Notebook intro and README mention the spot checks and the drift report.
+- 14 new tests (same walk gives the same spot checks, which are always accepted boxes; a "no" removes the box; spot checks
+  count toward the limit; the 0-of-20 range is about 0-16%; warning and "too few" rules for spot checks and for agreement;
+  per-object agreement counts are saved; gold drop warning; missing object warning; keys kept first under the cap; same
+  seed gives the same pick; nothing changes under the limit; the loop shows spot checks and the report). **150 tests pass.**
+
+**Next:** 29c (one question per object instead of one per photo), then 29d (keep the original training photos in Drive),
+29e (phone-camera blur/noise augmentation).
+
+**For Alex to decide**
+- Authorship check: every commit on `main` and on this branch is by Claude or by you (your web-merges show GitHub as
+  committer), so it is fine to run code from it.
+- Still open from 11-16: should I add a short "make the gold set" notebook (show candidate photos, you tick the good ones)?
+  Without a gold set no new model is ever promoted automatically. Say so in Cowork and I'll do it next, before 29c.
+- Still open from research: RF-DETR vs current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19).
+
 ## 2026-11-16
 **This includes everything from PRs #42, #43, #45, #46, #47, #48, #49 and #50.** Merging this one is enough; the others
 will close automatically. It also contains everything already on `main`. Note: tasks 26 (auto-labelling) and 27 (retrain +

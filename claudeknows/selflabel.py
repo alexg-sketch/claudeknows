@@ -368,10 +368,10 @@ def self_samples(root, gold=None, log=print):
 def _rarest_groups(extra, seed):
     """Self-labelled frames grouped by the rarest object among their boxes (rarity =
     self-labelled boxes of that object in `extra`), rarest group first, each shuffled."""
-    totals = Counter(l for s in extra for l, _ in s.boxes)
+    totals = Counter(l for s in extra for l, _ in getattr(s, "boxes", ()))
     groups = {}
     for s in extra:
-        labels = {l for l, _ in s.boxes}
+        labels = {l for l, _ in getattr(s, "boxes", ())}
         key = min(labels, key=lambda l: (totals[l], l)) if labels else ""
         groups.setdefault(key, []).append(s)
     rng = random.Random(seed)

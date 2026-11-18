@@ -93,6 +93,8 @@ def test_agreement_warning_rules():
     # walks with under 10 boxes are ignored
     small = _series([0.6] * 5) + [(f"s{i}", 0.1, 5) for i in range(3)]
     note, warn = drift.agreement_warning("keys", small)
+    assert warn is None  # the 3 low walks have too few boxes to count
+    note, warn = drift.agreement_warning("keys", _series([0.6, 0.6, 0.3, 0.3]))
     assert warn is None and "too few walks yet" in note
 
 
