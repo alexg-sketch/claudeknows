@@ -3,6 +3,85 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-18
+
+**Summary.** Ten pull requests are open. #52 (research 11-17) already contains #51 (task 28, the learning-loop notebook) and every
+other open one, so I started from #52. Next to be coded are tasks 29, 29b, 29c and 29d. The last week of entries were all about the
+loop's bookkeeping, so today I looked at **the photos themselves**. The loop now learns from walk videos, and the gold set includes
+held-out walks, but walk frames look different from the training photos: they come from a phone **moving** while filming (motion
+blur), they are **video-compressed** (HEVC/H.264, then saved again as JPEG), and indoor rooms are often dim (sensor **noise**). Most
+of the "original" training set is still Open Images still photos, which are mostly sharp. The detector's training augmentation
+(`detector.train_transform`) covers angle, size, position, perspective and colour, but has **nothing for blur, noise or compression**.
+Robustness benchmarks find standard detectors keep only 30-60% of their accuracy on corrupted photos (Michaelis et al., COCO-C), and
+work on detection under camera-shake blur (Sayed & Brostow, CVPR 2021) found failures grow with blur strength. The usual cheap fix is
+to add these effects as training augmentation; studies report robustness gains with clean accuracy flat or slightly up, but not
+always, so it must be A/B-tested. The blur filter in `frames.py` (threshold 60) removes only the worst frames, and a robot camera
+(phase 3) will not have one at all. **One roadmap change:** new task 29e, an optional "phone camera" augmentation, off by default
+until the A/B shows it helps. Licence note: do **not** use Albumentations for this. The old MIT package was archived in mid-2025
+(last MIT release 2.0.8) and its successor AlbumentationsX is AGPL-3.0 (or paid); everything needed is already in `torch` /
+`torchvision`. Nothing new on detectors (RF-DETR's last release found is 1.11.2, 3 Oct 2026; still Apache-2.0 for Nano-Large) or
+depth. arxiv.org, ar5iv, openaccess.thecvf.com and docs.pytorch.org were not reachable from this session, so paper and doc details
+come from search summaries (provisional).
+
+### Recommendations
+
+**1. "Phone camera" augmentation: motion blur, slight focus blur, sensor noise, JPEG compression (new task 29e; small effort, low risk).**
+- What: with chance `degrade_p` (flag `--degrade-p`, default 0 = off until it proves itself; try 0.3) apply ONE effect, picked at
+  random, to the training image **after** the composite paste, zoom crop and geometric steps (so pasted objects get the same blur
+  as the rest of the photo and do not stand out as "sharp stickers"):
+  - motion blur (weight 0.4): a straight-line kernel through the centre, length 0.5-1.5% of the image's short side (about 3-10 px at
+    640 px), random angle 0-180 degrees, normalised to sum 1, applied with `torch.nn.functional.conv2d` (`groups=3`,
+    `padding="same"`, reflect-pad first so edges do not darken);
+  - focus blur (0.2): `v2.GaussianBlur(kernel_size=5, sigma=(0.3, 1.2))`;
+  - sensor noise (0.2): `v2.GaussianNoise(mean=0, sigma=0.01-0.03, clip=True)` (images here are float 0-1);
+  - compression (0.2): `v2.JPEG(quality=(30, 75))`, which needs uint8: `(img*255).round().to(torch.uint8)`, then back to float /255.
+  Boxes do not change (these are pixel-only effects), so no box code is touched. If the installed torchvision is too old for
+  `JPEG` (added 0.18) or `GaussianNoise` (added 0.19/0.20), skip that effect and print once which ones are on; Colab's torchvision
+  is far newer. Not for validation, gold or test photos.
+- Why here: walk frames and a future robot camera are blurrier, noisier and more compressed than the Open Images photos that make
+  up most of the training set; the gold set's walk frames are exactly where this gap shows. It also gives the model practice on the
+  blurrier frames the self-labelling stage will meet. It costs almost nothing per image on a free Colab GPU.
+- How to test (CPU): a 1-px-wide white line on black, motion blur at angle 0 spreads only along the row; every effect keeps boxes
+  and labels identical and output in 0-1; `degrade_p=0` gives exactly today's output; with a fixed seed the choice is repeatable;
+  the uint8 round trip of `JPEG` keeps shape and dtype float32.
+- How to decide: same A/B as earlier options (23b/23k): spatial notebook run with `--degrade-p 0` vs `0.3`, paired difference with
+  the 23f range on validation, plus a "stress" line in the report that scores the test photos again with a fixed, seeded motion
+  blur (length 1% of short side) so the gain on blurry frames is visible. Keep it on (notebook + loop recipe) only if overall
+  validation mAP does not drop (lower bound above -0.01) and own-footage or stress mAP rises. Add `degrade_p` to
+  `retrain.recipe_of` so turning it on in the loop re-measures the noise floor through the existing path.
+- Licence: own code on `torch`/`torchvision` (BSD-3). Avoid Albumentations >= 2.0.9 / AlbumentationsX (AGPL-3.0).
+- Expected gain: mostly on walk frames and blurry/dim own footage (the gold set's hard cases); roughly neutral on sharp photos.
+  Realistic: a few mAP points on blurred photos, little or nothing on sharp ones. It may also make the current model and OWLv2
+  agree more often on walk frames (more self-labels), which the 11-15 agreement-rate line in task 29 would show.
+
+### Considered but not recommended
+- **Deblurring walk frames before training or labelling (e.g. 2025-2026 video-deblur models):** a second heavy model in the loop;
+  Sayed & Brostow found deblurring only partly fixes detection. Augmentation is far cheaper.
+- **Blur-type conditioning / special blur labels (Sayed & Brostow 2021):** bigger gains in their study but needs model changes to the
+  torchvision detector. Revisit only if the stress score stays low after 29e.
+- **Lowering the `frames.py` blur threshold so more blurry walk frames are kept:** blurry frames also give worse OWLv2 boxes; keep the
+  filter as it is until 29e shows the detector copes with blur.
+- **MoGe-2 ViT-S (metric depth + camera focal length from one image; code MIT):** could give metres for video frames that have no
+  EXIF focal length, but the upstream weights' licence is not stated by the authors (third-party mirrors disagree). Not usable for a
+  possibly commercial project until that is clear.
+- **Albumentations (MotionBlur, ImageCompression ready-made):** see licence note above.
+- **New detectors / depth:** nothing new under Apache-2.0 since 11-17.
+
+### For Alex to decide
+- Nothing new today. Still open: whether to add a "make the gold set" notebook before task 29 (asked in PR #51), fresh gold photos
+  when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an
+  optional third labeller (11-07).
+
+### Sources
+- Michaelis et al., Benchmarking Robustness in Object Detection (COCO-C; detectors keep 30-60% under corruption): https://arxiv.org/abs/1907.07484 , https://github.com/open-mmlab/mmdetection/blob/v2.5.0/docs/robustness_benchmarking.md
+- Sayed & Brostow, Improved Handling of Motion Blur in Online Object Detection (CVPR 2021): https://arxiv.org/abs/2011.14448 , https://mlanthology.org/cvpr/2021/sayed2021cvpr-improved
+- Corruption augmentation and clean accuracy (mixed results, needs A/B): https://arxiv.org/pdf/2111.07239 , https://arxiv.org/pdf/2305.13509 , https://arxiv.org/pdf/2103.13886
+- Synthetic motion blur with random kernel lengths/angles in training (PVUW 2024): https://arxiv.org/pdf/2406.17005
+- torchvision `v2.JPEG` (0.18) and `v2.GaussianNoise`: https://docs.pytorch.org/vision/stable/generated/torchvision.transforms.v2.JPEG.html , https://docs.pytorch.org/vision/0.20/generated/torchvision.transforms.v2.GaussianNoise.html
+- Albumentations licence change (MIT archived at 2.0.8; AlbumentationsX AGPL-3.0 or commercial): https://albumentations.ai/blog/2025/01-albumentationsx-dual-licensing/ , https://albumentations.ai/docs/license/
+- MoGe-2 (code MIT; ViT-S weights licence unstated upstream): https://arxiv.org/abs/2507.02546 , https://huggingface.co/Heliosoph/moge-2-vits-normal-onnx
+- RF-DETR changelog (latest found 1.11.2, Oct 2026): https://rfdetr.roboflow.com/latest/changelog/
+
 ## 2026-11-17
 
 **Summary.** Nine pull requests are open. #51 (task 28, the learning-loop notebook) already contains every other open one
