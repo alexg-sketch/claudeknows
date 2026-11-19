@@ -1,5 +1,17 @@
 # Progress log
 
+## 2026-11-19
+**Fix: a broken progress file no longer stops training, and a crash at the end no longer loses a run**
+- Alex's run on 11-18 stopped at the save step with "No such file: detector.pt". The real cause was earlier: training
+  crashed in its first seconds because `resume_detector.pt` in Drive was empty (left from an earlier cut-off run), and a
+  failed `!python` line does not stop Run all, so only the save step showed an error.
+- `train_detector` now moves an unreadable resume file aside to `resume_detector.pt.broken` and starts fresh.
+- The `train` command deletes the resume file only after `detector.pt` is saved (`keep_resume=True`), so a crash in the
+  cut-off step after training can be resumed instantly instead of retraining 60-90 minutes.
+- `spatial_colab.ipynb`: step 5 stops with a plain message if no model was made (and says whether Run all will continue
+  from saved progress); an older `detector.pt` is moved to `detector_previous.pt` first so it can't be mistaken for a new
+  one; step 8 runs from the repo folder and explains a missing model instead of a FileNotFoundError.
+
 ## 2026-11-18
 **This includes everything from PRs #42, #43, #45, #46, #47, #48, #49, #50, #51, #52 and #53.** Merging this one is enough;
 the others will close automatically. It also contains everything already on `main`. Note: tasks 26, 27 and 28 are marked

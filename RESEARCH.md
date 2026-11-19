@@ -3,6 +3,87 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-19
+
+**Summary.** One pull request is open: #55 ("survive a broken resume file"). It was branched before #56 (the new gold-set notebook)
+was merged into `main`, so I started from #55 and merged `main` into it; this branch has both. Next to be coded are tasks 29c, 29d
+and 29e. What changed this week: **Alex now has a way to build the gold set** (the `gold_set.ipynb` notebook from #56). That means
+there will soon be a small set of photos whose boxes a person has checked, and today I looked at what else that set can tell us
+beyond the promote/keep decision. The whole loop rests on one rule: a walk frame becomes training data only when the current detector
+and OWLv2 agree. Nobody has measured how good the two labellers are on Alex's own rooms. The spot checks from task 29 measure only one
+thing (how often *accepted* boxes are wrong), need about 7 walks before they say anything, and cannot show the other failure: real
+objects that **neither** labeller finds, or that only one finds, so they never become training data. For keys, the weakest object,
+that is the likely problem. Papers on self-training for detection keep finding the same two things: precision and recall of
+pseudo-labels pull against each other as the cut-off moves, and they differ a lot between classes (HyperMODEST 2023; LEOD, CVPR 2024),
+so they should be measured per class on checked labels. The gold set can do that today at almost no cost (one OWLv2 pass over ~50
+photos). **One roadmap change:** new task 29f, a "labeller check" on the gold set, report only. I also looked at Qwen3-VL (Apache-2.0)
+as a stronger labeller for keys, and at Video Depth Anything Small; neither is worth adding now (below). Nothing new on detectors:
+RF-DETR's latest release is still 1.11.2 (3 Oct 2026). Several sites (voxel51.com, blog.roboflow.com, arxiv.org) were not reachable
+from this session, so some details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Labeller check on the gold set: how good are OWLv2, the detector and the "both agree" rule, per object (new task 29f; small effort, low risk).**
+- What: a function `labeller_check(gold_samples, det, owl)` (in `drift.py`, reusing `autobox.iou` and `drift.wilson`) that runs, on
+  every gold photo, (a) OWLv2 at its cut-offs (`autobox.THRESHOLD`), (b) the current detector at its per-object cut-offs (task 23m),
+  and (c) the agreement rule from `selflabel.agree` (same label, IoU >= 0.5, both above cut-off; mean box). Each is matched to the
+  gold boxes (same label, IoU >= 0.5, each gold box matched at most once, highest score first). Per object it reports:
+  - **precision** (of the boxes it proposed, how many are real) and **recall** (of the real boxes, how many it found), each with
+    the Wilson 95% range (`drift.wilson`), and the box counts;
+  - for OWLv2 only: the same two numbers at cut-offs 0.15 / 0.2 / 0.25 / 0.3 / 0.4 / 0.5, as a small table (this shows whether
+    lowering the keys cut-off, as task 23m allows, would find more keys without many false boxes).
+  The steadiness rule is left out (gold photos are single frames); say so in the report: "before the steadiness check".
+- Where it shows: one block in `drift_report.txt` and the loop summary, e.g. "keys: agreed boxes are right 18 of 19 (95%, range
+  75-99%) and find 19 of 31 real keys (61%, range 44-76%); OWLv2 alone finds 24 of 31 at 0.3". Under 10 gold boxes of an object
+  print "too few gold boxes for <object>" instead of numbers.
+- When it runs: in the learning-loop notebook after labelling, only when the gold set's hash or the detector version changed
+  since the last check (store the results in Drive `claudeknows_models/labeller_check.json` with both ids), so normal runs cost
+  nothing. One OWLv2 pass over ~50 photos is about a minute on a T4.
+- **Report only.** It must never change a cut-off, the agreement rule or the gate by itself. Choosing labeller settings by their gold
+  score would make the gold set a tuning set, and the gate's "better on gold" would then be less honest. If the numbers argue for a
+  change (say, OWLv2 keys cut-off 0.2), that is a decision for Alex, written in the summary as a plain suggestion.
+- Why here: the loop's safety rests on "two labellers agree, so the label is probably right". This turns "probably" into a number per
+  object, right away instead of after ~7 walks, and it adds the missing half (recall): if agreed boxes find only, say, a third of the
+  real keys, the loop will keep learning shoes and bottles however good its precision is, and 29b/29c can only partly fix that.
+  It also gives a fair baseline for any future third labeller (SAM 3, LLMDet, Qwen3-VL): run the same check and compare.
+- Tests (CPU, fake detector/OWLv2 functions returning fixed boxes): a perfect labeller gives precision = recall = 1; a labeller that
+  adds one wrong box per photo halves precision and keeps recall; a box with the wrong label counts as wrong; one gold box matched
+  by two proposals counts once; agreement needs both; under 10 gold boxes -> "too few"; a second run with the same gold hash and
+  detector version does not call the labellers again; nothing in `THRESHOLD`, the cut-offs or the gate changes.
+- Licence: own code; OWLv2 Apache-2.0 as now. Expected gain: no direct mAP change; it shows where the self-labels are weak (most
+  likely keys recall), so later choices are made on evidence instead of guesses.
+
+### Considered but not recommended
+- **Qwen3-VL-2B/4B as a labeller for keys (Apache-2.0, released Oct 2025; returns boxes as JSON, 0-1000 coordinates):** may well
+  find keys better than OWLv2, and 2B runs on a free T4. But it gives no calibrated confidence score per box, which the agreement
+  rule, the review ordering and the cut-offs all depend on; and its detection quality on small objects is not documented. Once 29f
+  exists, it can be scored the same way; revisit then.
+- **Weighting self-labelled boxes lower in the loss (soft pseudo-label weights, e.g. DeSimPL 2025, SCMT 2022):** the evidence is
+  mixed (DeSimPL found weighting the class loss hurt; only the box loss helped), torchvision's Faster R-CNN has no per-image loss
+  weights without rewriting its loss code, and the 30% cap plus two-labeller agreement already limit damage. Revisit if 29f or the
+  spot checks show many wrong agreed boxes.
+- **Video Depth Anything Small (Apache-2.0) for steadier distances on walks:** the official metric (metres) version is built on the
+  Large model (CC-BY-NC, not usable commercially); a "Metric Small" repo exists but its terms are only a metadata tag. Distance is not
+  a bottleneck now.
+- **New detectors:** nothing new; RF-DETR 1.11.2 (Oct 2026) is still the latest found.
+
+### For Alex to decide
+- Nothing new today. Still open: RF-DETR / DEIMv2 vs the current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3
+  as an optional third labeller (11-07), fresh gold photos when the wear warning appears (11-13). Once 29f has run, it may suggest a
+  lower OWLv2 cut-off for keys; that would be your call.
+
+### Sources
+- HyperMODEST, confidence filtering trades recall for precision in self-training (2023): https://arxiv.org/pdf/2304.14446
+- LEOD: Label-Efficient Object Detection (CVPR 2024; pseudo-label precision/recall per class over rounds): https://arxiv.org/pdf/2311.17286 , https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wu_LEOD_Label-Efficient_Object_CVPR_2024_supplemental.pdf
+- Adaptive Class-Rebalancing Self-Training for detection: https://arxiv.org/pdf/2107.05031
+- Zero-shot auto-labelling study (Voxel51; best thresholds ~0.2-0.5, vendor material, page not reachable here): https://voxel51.com/blog/zero-shot-auto-labeling-rivals-human-performance
+- DeSimPL, soft pseudo-label weights for domain-adaptive detection (2025): https://www.themoonlight.io/review/de-simplifying-pseudo-labels-to-enhancing-domain-adaptive-object-detection
+- SCMT, confidence-weighted pseudo-labels (IJCAI 2022): https://www.ijcai.org/proceedings/2022/0207.pdf
+- Qwen3-VL (Apache-2.0, 2B released 21 Oct 2025, 2D grounding): https://gitee.com/x-github/Qwen3-VL , https://blog.roboflow.com/use-qwen3-vl-in-google-colab/
+- WeDetect (CVPR 2026; open-vocabulary detector finetuned from Qwen3-VL, 13x faster): https://www.openaccess.thecvf.com/content/CVPR2026/supplemental/Fu_WeDetect_Fast_Open-Vocabulary_CVPR_2026_supplemental.pdf
+- Video Depth Anything licences (Small Apache-2.0, Large CC-BY-NC; metric model from Large): https://gitee.com/chen-chaos/Video-Depth-Anything_iw3 , https://huggingface.co/depth-anything/Metric-Video-Depth-Anything-Small/blob/main/README.md
+- RF-DETR changelog (latest 1.11.2, 3 Oct 2026): https://rfdetr.roboflow.com/latest/changelog/
+
 ## 2026-11-18
 
 **Summary.** Ten pull requests are open. #52 (research 11-17) already contains #51 (task 28, the learning-loop notebook) and every
