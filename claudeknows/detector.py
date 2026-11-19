@@ -773,8 +773,8 @@ def main(argv=None):
                    help="test-time augmentation: flip = mirror + 1.3x, tiles = also 4 zoomed tiles")
     a = p.parse_args(argv)
     samples, pending = scan_detection(a.root)
-    from .gold import gold_samples, load_gold, remove_gold, verify_gold
-    gold_dir = a.gold_dir or a.root
+    from .gold import default_gold_dir, gold_samples, load_gold, remove_gold, verify_gold
+    gold_dir = a.gold_dir or default_gold_dir(a.root)
     gold = load_gold(gold_dir)
     if gold:  # frozen yardstick: out of train AND test pools
         samples = remove_gold(samples, gold)
