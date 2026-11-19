@@ -177,7 +177,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                    patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
                    rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15,
                    zoom_crop_p=0.0, ema_decay=0.0, resume_path=None, workers=0,
-                   gold=None, init_state=None):
+                   gold=None, init_state=None, keep_resume=False):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -199,6 +199,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     `workers` loads photos in that many extra processes (0 = in the training process).
     `gold`: a manifest from `gold.load_gold`; training refuses (GoldLeak) if any gold image is in
     the training, validation or background photos.
+    `keep_resume`: leave the resume file in place after a normal finish, for a caller that
+    deletes it only once the model is safely saved (so a crash after training loses nothing).
     `init_state`: start from these weights (a state dict, e.g. the current model's) instead of
     the freshly built model; None = fresh start (COCO weights when `pretrained`).
     """
@@ -248,9 +250,17 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     if init_state is not None:  # only added when used, so older resume files still match
         settings["init"] = "given"
     start = 0
+    ck = None
     if resume_path and os.path.exists(resume_path):
-        ck = torch.load(resume_path, map_location=device, weights_only=True)
-        if ck["settings"] != settings:
+        try:
+            ck = torch.load(resume_path, map_location=device, weights_only=True)
+        except Exception as e:  # empty or cut-off file (e.g. a Drive write that never finished)
+            broken = resume_path + ".broken"
+            os.replace(resume_path, broken)
+            log(f"resume file {resume_path} could not be read ({type(e).__name__}): "
+                f"moved it to {broken} and starting fresh")
+    if ck is not None:
+        if not isinstance(ck, dict) or ck.get("settings") != settings:
             log(f"resume file {resume_path} was made with different settings: starting fresh")
         else:
             model.load_state_dict(ck["model"])
@@ -323,7 +333,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
             os.replace(tmp, resume_path)
         if stopped:
             break
-    if resume_path and os.path.exists(resume_path):
+    if resume_path and not keep_resume and os.path.exists(resume_path):
         os.remove(resume_path)
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -792,11 +802,13 @@ def main(argv=None):
                                      negatives=negs_train if a.neg_frac > 0 else None,
                                      neg_frac=a.neg_frac, zoom_crop_p=a.zoom_crop_p,
                                      ema_decay=a.ema_decay, resume_path=a.resume,
-                                     workers=a.workers, gold=gold)
+                                     workers=a.workers, gold=gold, keep_resume=True)
         cuts = best_thresholds(model, val) if val else {}
         if cuts:
             print(format_cutoffs(cutoff_table(predict_samples(model, val, 0.05), cuts=cuts)))
         save_detector(model, a.out, hist, extra={"train_stats": stats, "thresholds": cuts})
+        if a.resume and os.path.exists(a.resume):  # only now: a crash before this keeps progress
+            os.remove(a.resume)
         print(f"saved {a.out} (best epoch {stats['best_epoch']} of {stats['epochs_run']} run)")
     else:
         model, classes = load_detector(a.checkpoint)
