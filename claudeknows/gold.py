@@ -20,6 +20,7 @@ from pathlib import Path
 from .detection_data import DetSample, FOLDERS, load_distance_photos
 
 GOLD_FILE = "gold.json"
+DRIVE_GOLD = "/content/drive/MyDrive/claudeknows_models/gold"  # where the gold-set notebook saves it
 
 
 class GoldLeak(RuntimeError):
@@ -88,6 +89,111 @@ def review_sheet(samples, out="gold_review.jpg", cols=5, thumb=240):
     return out
 
 
+MIN_SCENES = 5  # the loop's promotion gate needs this many gold scenes (retrain.MIN_GOLD_SCENES)
+
+
+def pick_gold_scenes(samples, scenes=None, target=6, per_scene=8, seed=0, log=print):
+    """Choose WHOLE scenes of Alex's footage to offer as gold, for the gold-set notebook.
+
+    A gold video is left out of all training (see `is_gold`), so a folder must keep at
+    least one other scene for training: a folder with a single scene is never picked
+    from (it says so). `together` scenes go first (several objects per photo), then a
+    fixed shuffle. From each picked scene, up to `per_scene` boxed frames, spread out.
+    `scenes` comes from `detection_data.scene_groups` (videos of the same room are one scene,
+    and all of them are offered together, so no look-alike video is left in training).
+    Returns the candidate samples.
+    """
+    own = [s for s in samples if s.source == "own" and s.by != "pending" and s.boxes]
+    unit = (lambda s: scenes.get(s.group, s.group)) if scenes else (lambda s: s.group)
+    by_scene = {}
+    for s in own:
+        by_scene.setdefault(unit(s), []).append(s)
+    folders = {u: {s.folder for s in ss} for u, ss in by_scene.items()}
+    left = {}
+    for fs in folders.values():
+        for f in fs:
+            left[f] = left.get(f, 0) + 1
+    for f in sorted(f for f, n in left.items() if n < 2):
+        log(f"{f}: only one scene of your footage, so it stays for training "
+            f"(film another {f} video in a different place to include it)")
+    order = sorted(by_scene, key=lambda u: ("together" not in folders[u],
+                                            hashlib.md5(f"{seed}:{u}".encode()).hexdigest()))
+    picked = []
+    for u in order:
+        if len(picked) >= target:
+            break
+        if all(left[f] >= 2 for f in folders[u]):
+            picked.append(u)
+            for f in folders[u]:
+                left[f] -= 1
+    cands = []
+    for u in picked:
+        frames = sorted(by_scene[u], key=lambda s: s.path.name)
+        step = max(1, len(frames) / per_scene)
+        cands += [frames[int(i * step)] for i in range(min(per_scene, len(frames)))]
+    log(f"{len(cands)} photos from {len(picked)} scene(s) offered for the gold set")
+    if len(picked) < MIN_SCENES:
+        log(f"note: the learning loop needs {MIN_SCENES} gold scenes before it may upgrade your model; "
+            f"you have {len(picked)} to offer. Film more videos, each in a different place.")
+    return cands
+
+
+def gold_view(sample, size=480):
+    """One candidate photo with its boxes and labels drawn, for a yes/no question."""
+    from PIL import Image, ImageDraw
+    with Image.open(sample.path) as im:
+        im = im.convert("RGB")
+        im.thumbnail((size, size))
+    d = ImageDraw.Draw(im)
+    w, h = im.size
+    for name, (x0, y0, x1, y1) in sample.boxes:
+        d.rectangle([x0 * w, y0 * h, x1 * w, y1 * h], outline="red", width=3)
+        d.text((x0 * w + 4, y0 * h + 4), name, fill="red")
+    return im
+
+
+def load_answers(path):
+    p = Path(path)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def save_answer(path, name, ok):
+    """Remember one yes/no about a candidate photo (file name) right away, e.g. in Drive."""
+    p = Path(path)
+    answers = load_answers(p)
+    answers[name] = bool(ok)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(answers, indent=1))
+    tmp.replace(p)
+    return answers
+
+
+def freeze_from_answers(cands, answers, root, dest, scenes=None, min_scenes=MIN_SCENES,
+                        allow_small=False, log=print):
+    """Freeze the candidates Alex said yes to as the gold set and copy it to `dest` (Drive).
+
+    Refuses when `dest` already holds a gold set (it is frozen for good), and when the
+    yes-photos cover fewer than `min_scenes` scenes unless `allow_small`. Returns the
+    manifest, or None when it refused."""
+    if load_gold(dest) is not None:
+        log(f"a gold set already exists in {dest}; it is frozen, nothing changed")
+        return None
+    yes = [s for s in cands if answers.get(s.path.name)]
+    unit = (lambda s: scenes.get(s.group, s.group)) if scenes else (lambda s: s.group)
+    n_scenes = len({unit(s) for s in yes})
+    if not yes:
+        log("no photos marked Yes yet: answer the questions above, then run this cell again")
+        return None
+    if n_scenes < min_scenes and not allow_small:
+        log(f"only {n_scenes} scene(s) have a Yes photo; {min_scenes} are needed. Answer more, or "
+            f"set ALLOW_SMALL = True to freeze it anyway (it can't be changed later)")
+        return None
+    manifest = build_gold(mark_checked(yes, [s.path.name for s in yes]), root, force=True, log=log)
+    copy_gold(manifest, root, dest, log=log)
+    return manifest
+
+
 def copy_gold(manifest, root, dest, log=print):
     """Keep the gold set outside Colab's temporary disk: copy every gold image and
     `gold.json` into `dest` (e.g. Drive `claudeknows_models/gold/`). Never overwrites
@@ -140,6 +246,15 @@ def build_gold(samples, root="data/detection", distance=True, force=False, log=p
     out.write_text(json.dumps(manifest, indent=1))
     log(f"gold set frozen: {len(items)} images, {len(dist)} distance photos -> {out}")
     return manifest
+
+
+def default_gold_dir(root="data/detection", drive_gold=DRIVE_GOLD):
+    """Where to read the gold set when none is named: next to the data if one is there,
+    else the Drive copy the gold-set notebook saved (so the spatial notebook never trains
+    on gold videos), else `root` (no gold set yet)."""
+    if gold_path(root).exists() or not gold_path(drive_gold).exists():
+        return root
+    return drive_gold
 
 
 def load_gold(root="data/detection"):
