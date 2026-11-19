@@ -3,6 +3,582 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-18
+
+**Summary.** Ten pull requests are open. #52 (research 11-17) already contains #51 (task 28, the learning-loop notebook) and every
+other open one, so I started from #52. Next to be coded are tasks 29, 29b, 29c and 29d. The last week of entries were all about the
+loop's bookkeeping, so today I looked at **the photos themselves**. The loop now learns from walk videos, and the gold set includes
+held-out walks, but walk frames look different from the training photos: they come from a phone **moving** while filming (motion
+blur), they are **video-compressed** (HEVC/H.264, then saved again as JPEG), and indoor rooms are often dim (sensor **noise**). Most
+of the "original" training set is still Open Images still photos, which are mostly sharp. The detector's training augmentation
+(`detector.train_transform`) covers angle, size, position, perspective and colour, but has **nothing for blur, noise or compression**.
+Robustness benchmarks find standard detectors keep only 30-60% of their accuracy on corrupted photos (Michaelis et al., COCO-C), and
+work on detection under camera-shake blur (Sayed & Brostow, CVPR 2021) found failures grow with blur strength. The usual cheap fix is
+to add these effects as training augmentation; studies report robustness gains with clean accuracy flat or slightly up, but not
+always, so it must be A/B-tested. The blur filter in `frames.py` (threshold 60) removes only the worst frames, and a robot camera
+(phase 3) will not have one at all. **One roadmap change:** new task 29e, an optional "phone camera" augmentation, off by default
+until the A/B shows it helps. Licence note: do **not** use Albumentations for this. The old MIT package was archived in mid-2025
+(last MIT release 2.0.8) and its successor AlbumentationsX is AGPL-3.0 (or paid); everything needed is already in `torch` /
+`torchvision`. Nothing new on detectors (RF-DETR's last release found is 1.11.2, 3 Oct 2026; still Apache-2.0 for Nano-Large) or
+depth. arxiv.org, ar5iv, openaccess.thecvf.com and docs.pytorch.org were not reachable from this session, so paper and doc details
+come from search summaries (provisional).
+
+### Recommendations
+
+**1. "Phone camera" augmentation: motion blur, slight focus blur, sensor noise, JPEG compression (new task 29e; small effort, low risk).**
+- What: with chance `degrade_p` (flag `--degrade-p`, default 0 = off until it proves itself; try 0.3) apply ONE effect, picked at
+  random, to the training image **after** the composite paste, zoom crop and geometric steps (so pasted objects get the same blur
+  as the rest of the photo and do not stand out as "sharp stickers"):
+  - motion blur (weight 0.4): a straight-line kernel through the centre, length 0.5-1.5% of the image's short side (about 3-10 px at
+    640 px), random angle 0-180 degrees, normalised to sum 1, applied with `torch.nn.functional.conv2d` (`groups=3`,
+    `padding="same"`, reflect-pad first so edges do not darken);
+  - focus blur (0.2): `v2.GaussianBlur(kernel_size=5, sigma=(0.3, 1.2))`;
+  - sensor noise (0.2): `v2.GaussianNoise(mean=0, sigma=0.01-0.03, clip=True)` (images here are float 0-1);
+  - compression (0.2): `v2.JPEG(quality=(30, 75))`, which needs uint8: `(img*255).round().to(torch.uint8)`, then back to float /255.
+  Boxes do not change (these are pixel-only effects), so no box code is touched. If the installed torchvision is too old for
+  `JPEG` (added 0.18) or `GaussianNoise` (added 0.19/0.20), skip that effect and print once which ones are on; Colab's torchvision
+  is far newer. Not for validation, gold or test photos.
+- Why here: walk frames and a future robot camera are blurrier, noisier and more compressed than the Open Images photos that make
+  up most of the training set; the gold set's walk frames are exactly where this gap shows. It also gives the model practice on the
+  blurrier frames the self-labelling stage will meet. It costs almost nothing per image on a free Colab GPU.
+- How to test (CPU): a 1-px-wide white line on black, motion blur at angle 0 spreads only along the row; every effect keeps boxes
+  and labels identical and output in 0-1; `degrade_p=0` gives exactly today's output; with a fixed seed the choice is repeatable;
+  the uint8 round trip of `JPEG` keeps shape and dtype float32.
+- How to decide: same A/B as earlier options (23b/23k): spatial notebook run with `--degrade-p 0` vs `0.3`, paired difference with
+  the 23f range on validation, plus a "stress" line in the report that scores the test photos again with a fixed, seeded motion
+  blur (length 1% of short side) so the gain on blurry frames is visible. Keep it on (notebook + loop recipe) only if overall
+  validation mAP does not drop (lower bound above -0.01) and own-footage or stress mAP rises. Add `degrade_p` to
+  `retrain.recipe_of` so turning it on in the loop re-measures the noise floor through the existing path.
+- Licence: own code on `torch`/`torchvision` (BSD-3). Avoid Albumentations >= 2.0.9 / AlbumentationsX (AGPL-3.0).
+- Expected gain: mostly on walk frames and blurry/dim own footage (the gold set's hard cases); roughly neutral on sharp photos.
+  Realistic: a few mAP points on blurred photos, little or nothing on sharp ones. It may also make the current model and OWLv2
+  agree more often on walk frames (more self-labels), which the 11-15 agreement-rate line in task 29 would show.
+
+### Considered but not recommended
+- **Deblurring walk frames before training or labelling (e.g. 2025-2026 video-deblur models):** a second heavy model in the loop;
+  Sayed & Brostow found deblurring only partly fixes detection. Augmentation is far cheaper.
+- **Blur-type conditioning / special blur labels (Sayed & Brostow 2021):** bigger gains in their study but needs model changes to the
+  torchvision detector. Revisit only if the stress score stays low after 29e.
+- **Lowering the `frames.py` blur threshold so more blurry walk frames are kept:** blurry frames also give worse OWLv2 boxes; keep the
+  filter as it is until 29e shows the detector copes with blur.
+- **MoGe-2 ViT-S (metric depth + camera focal length from one image; code MIT):** could give metres for video frames that have no
+  EXIF focal length, but the upstream weights' licence is not stated by the authors (third-party mirrors disagree). Not usable for a
+  possibly commercial project until that is clear.
+- **Albumentations (MotionBlur, ImageCompression ready-made):** see licence note above.
+- **New detectors / depth:** nothing new under Apache-2.0 since 11-17.
+
+### For Alex to decide
+- Nothing new today. Still open: whether to add a "make the gold set" notebook before task 29 (asked in PR #51), fresh gold photos
+  when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an
+  optional third labeller (11-07).
+
+### Sources
+- Michaelis et al., Benchmarking Robustness in Object Detection (COCO-C; detectors keep 30-60% under corruption): https://arxiv.org/abs/1907.07484 , https://github.com/open-mmlab/mmdetection/blob/v2.5.0/docs/robustness_benchmarking.md
+- Sayed & Brostow, Improved Handling of Motion Blur in Online Object Detection (CVPR 2021): https://arxiv.org/abs/2011.14448 , https://mlanthology.org/cvpr/2021/sayed2021cvpr-improved
+- Corruption augmentation and clean accuracy (mixed results, needs A/B): https://arxiv.org/pdf/2111.07239 , https://arxiv.org/pdf/2305.13509 , https://arxiv.org/pdf/2103.13886
+- Synthetic motion blur with random kernel lengths/angles in training (PVUW 2024): https://arxiv.org/pdf/2406.17005
+- torchvision `v2.JPEG` (0.18) and `v2.GaussianNoise`: https://docs.pytorch.org/vision/stable/generated/torchvision.transforms.v2.JPEG.html , https://docs.pytorch.org/vision/0.20/generated/torchvision.transforms.v2.GaussianNoise.html
+- Albumentations licence change (MIT archived at 2.0.8; AlbumentationsX AGPL-3.0 or commercial): https://albumentations.ai/blog/2025/01-albumentationsx-dual-licensing/ , https://albumentations.ai/docs/license/
+- MoGe-2 (code MIT; ViT-S weights licence unstated upstream): https://arxiv.org/abs/2507.02546 , https://huggingface.co/Heliosoph/moge-2-vits-normal-onnx
+- RF-DETR changelog (latest found 1.11.2, Oct 2026): https://rfdetr.roboflow.com/latest/changelog/
+
+## 2026-11-17
+
+**Summary.** Nine pull requests are open. #51 (task 28, the learning-loop notebook) already contains every other open one
+(#42, #43, #45-#50), so I started from #51. Next to be coded are tasks 29, 29b and 29c. Today I looked at **what happens before
+each loop retrain**, now that `loop.py` exists. Colab's disk is new every session, so `prepare_training_photos` rebuilds the
+original training photos from scratch every time a retrain happens: it streams the Open Images label, box and metadata files
+(about 5 GB together: 2.7 GB labels, the v6 box file and the metadata file for credits), downloads ~1,000 photos again, and runs
+OWLv2 twice over all of them (`autobox run` + `fill`). That costs time on a free GPU session before training even starts. It also
+means **the "original" half of every retrain is a slightly different data set each time**: `_save_whole` quietly skips any photo
+that times out and the next candidate fills its place, and OWLv2 boxes near the 0.3 / 0.4 cut-offs can flip between runs (fp16 /
+GPU type, see sources), which also moves photos between the train and validation splits. The gate's noise floor (task 27/28) only
+measures seed-to-seed spread on **one** data set; Bouthillier et al. (MLSys 2021) found that data-sampling variance is a large
+source of variance in benchmark results, often bigger than initialisation, so a "gain" could partly be data reshuffling the floor
+never measured. Colab's own FAQ also warns that Drive operations time out on folders with very many files, and the standard advice
+is to keep a dataset in Drive as one archive and copy it to local disk. **One roadmap change:** new task 29d, freeze the original
+training set once as a single archive in Drive and reuse it. Nothing new on detectors (still no new Apache-2.0 release found for
+Nov 2026; RF-DETR Nano-Large remains the open option, YOLO26 is AGPL) or depth. arxiv.org and several paper sites were not
+reachable from this session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Freeze the original training photos once in Drive and reuse them in every retrain (new task 29d; small-medium effort, low risk).**
+- What: the first time the loop retrains, build the original set as today, then save it to Drive
+  `claudeknows_models/training_set/` as ONE uncompressed `.tar` (JPEGs don't compress further) plus `manifest.json`: every file
+  path with its sha256, the `boxes.json` files, counts per object and per source (Open Images / own footage / negatives), date,
+  the git commit and the settings used (cap 300, negatives 120, OWLv2 thresholds 0.3 / 0.4). Write to a temporary name, then
+  rename, so a disconnect never leaves half a snapshot. Every later retrain copies the one tar to local disk, unpacks it into
+  `root`, checks the hashes and skips download / import / auto-boxing completely.
+- When to rebuild: only when Alex's own-footage folders (`claudeknows_photos/<object>/`, `together/`, `empty/`, not `walks/`)
+  have changed (compare a list of file names + sizes stored in the manifest), when a hash check fails, or when the settings above
+  change. Say so in the summary: "training photos: snapshot ts-2026-11-20 (1,034 photos) reused" or "rebuilt: 3 new videos in
+  claudeknows_photos/keys".
+- Why here: (a) **time** — every retrain currently re-streams ~5 GB of CSVs, re-downloads the photos and runs OWLv2 twice; my rough
+  estimate is 15-30 minutes of a free Colab session, and longer sessions are more likely to be cut off (Google does not publish
+  limits; third-party guides say up to ~12 h, often less). (b) **fair gate** — with a fixed set, the candidate's training data
+  differs from the previous candidate's only by the new self-labelled walk frames, which is exactly what the gate is meant to
+  judge, and the validation split used for early stopping and score cut-offs (23m) stays the same. (c) **Drive** — one large file
+  instead of ~1,000 small ones avoids Drive's many-files timeouts.
+- Make the noise floor follow it: add the snapshot id (first 12 hex characters of the manifest's sha256) to
+  `retrain.recipe_of`, so a rebuilt snapshot triggers the existing "measured with different training settings: measure it again"
+  path, and save `training_set` in each candidate checkpoint and in `versions`. Note in the summary that the very first model
+  (from the spatial notebook) was trained on its own download, so the first comparison is not yet like-for-like.
+- How: own code in `loop.py` (`prepare_training_photos(root, photos_dir, snapshot_dir=None, ...)`), standard library only
+  (`tarfile`, `hashlib`, `json`, `os.replace`). Gold photos are still removed later by `retrain._data` as today; the snapshot stays
+  in Drive only, never in git. Tests (CPU, fake `run` function that records commands and writes a few tiny files): the first call
+  builds and writes tar + manifest; a second call into an empty `root` with the snapshot runs no download/autobox command and
+  restores identical files; a corrupted file in the snapshot triggers a rebuild with a message; adding a file to the own-footage
+  folder triggers a rebuild; a different snapshot id changes `recipe_of`.
+- Size: ~1,000-1,500 JPEGs at most 960 px, roughly 0.2-0.4 GB; fine for a free Drive (15 GB). Licence: own code; Open Images photos
+  stay CC BY with the credits file inside the snapshot.
+- Expected gain: shorter loop runs and fewer runs lost to disconnects; a gate whose noise floor matches what actually changes
+  between candidates. No change to the model or to the 30% / replay rules.
+
+### Considered but not recommended
+- **Making the loop's retrain resumable after a disconnect (task 23n already has `--resume`):** on 11-16 the dev routine asked Alex
+  to say if Colab cuts him off. With the snapshot, a lost run is cheaper to repeat; leave it to Alex's answer.
+- **Packing walk frames into archives too:** they are already one folder per walk (~240 frames at most), well below the sizes where
+  Drive times out. Revisit if a walk folder grows past a few thousand files.
+- **Running OWLv2 in fp32 / fixed GPU type to make boxes repeatable:** the snapshot removes the need, since boxes are made once.
+- **DVC / lakeFS-style dataset versioning tools:** too heavy for one notebook; a tar + manifest with hashes gives the same guarantee here.
+- **New detectors / depth:** nothing new under Apache-2.0 in Nov 2026. YOLO26 is AGPL.
+
+### For Alex to decide
+- Nothing new today. Still open: whether to add a "make the gold set" notebook before task 29 (asked in PR #51), fresh gold photos
+  when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an
+  optional third labeller (11-07).
+
+### Sources
+- Bouthillier et al., Accounting for Variance in Machine Learning Benchmarks (MLSys 2021): https://proceedings.mlsys.org/paper_files/paper/2021/hash/0184b0cd3cfb185989f858a1d9f5c1eb-Abstract.html , https://arxiv.org/abs/2103.03098
+- Colab FAQ (Drive timeouts with many files, limits not published): https://research.google.com/colaboratory/faq.html
+- Zip-on-Drive, copy-then-unpack practice for Colab: https://forums.fast.ai/t/how-to-work-fast-with-files-on-google-drive/43011 , https://discuss.pytorch.org/t/google-colab-dataset-uploading/117141
+- Colab free-tier limits overview (third-party, unofficial): https://www.hivenet.com/post/google-colaboratory-gpu-complete-guide-to-free-cloud-gpu-access-and-limitations
+- Floating-point non-determinism on GPUs (why repeated OWLv2 runs can differ near a cut-off): https://arxiv.org/pdf/2408.05148 , https://arxiv.org/html/2506.09501v2
+- Experience replay in continual learning (the fixed "original" half of each retrain): https://arxiv.org/pdf/1811.11682
+- Detector licences: https://cdn.jsdelivr.net/gh/roboflow/rf-detr@develop/README.md , https://learnopencv.com/yolov26-real-time-deployment/ , https://lightly.ai/blog/best-ultralytics-alternatives-in-2026
+
+## 2026-11-16
+
+**Summary.** Seven pull requests are open. #49 (research 11-15) already contains #48, #47, #46, #45, #43 and #42, so I started
+from #49. Next to be coded is task 28 (the learning-loop notebook), which shows Alex's yes/no review batch (at most 20 questions
+per walk). Today I looked at **how many of those 20 questions are really different questions.** Walk frames are taken twice a second,
+and near-identical frames are dropped, but the same object still shows up in several frames in a row. If only OWLv2 (or only the
+detector) sees a key on a table, `label_walk` makes one question **per frame**, so one key can take, say, 6 of the 20 places. Each of
+those frames also stays held back until its own question is answered, and questions past the cap of 20 are never asked. Work on
+video labelling and video active learning says the same thing: frame-by-frame selection wastes the budget on near-duplicates.
+Ince et al. (ICIP 2021) link detections over time into "tracklets" and have the person check a whole tracklet at once (up to 96%
+less annotation work in their drone videos); SPAM (2024) labels "track-centric" instead of frame-centric; CUTAL (May 2026) finds that
+picking clips by uncertainty alone picks neighbours with the same uncertainty and spreads picks out over time instead. **One roadmap
+change** (new task 29c): group questions about the same object in neighbouring frames and ask once. Nothing new on detectors
+(no new Apache-2.0 release found for Nov 2026; RF-DETR Nano-Large is still the open option, YOLO26 is AGPL) or depth. arxiv.org was not
+reachable from this session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Ask once per object, not once per frame (new task 29c; small effort, low-medium risk).**
+- What: before the questions are ordered and capped in `selflabel.label_walk`, link questions into short "tracks": same object
+  label, frames at most 2 positions apart in walk order, and box IoU > 0.3 (`STEADY_IOU`, the same rule the steadiness check
+  uses) with the track's last box. At most one box per frame in a track (keep the best IoU), and at most 8 frames per track (about 4 s
+  of walk at 2 frames per second) so a track cannot drift onto a different object. Each track becomes **one** question. Show its
+  highest-scoring member's frame and box (same plain view as now: photo, box, "Is this a <object>?", no score, no frame count).
+  Order tracks by the highest disagreement among their members, then apply the cap of 20 to tracks.
+- Answer: `apply_answers` applies a track's yes/no to every member. "Yes" adds each member's own box to its own frame (marked
+  `by="alex-track"` so the drift report can tell them apart from single answers); "no" removes every member's question. Frames become
+  trainable as soon as their open questions are gone, as now.
+- Why here: the question budget is the scarcest thing in the loop (Alex's time), and keys, the weakest object, are the object most
+  likely to be seen by only one labeller and so to need questions. Grouping lets the same 20 answers resolve several times more frames,
+  and fewer questions fall past the cap. It also fits the rarest-object-first cap (29b): more key frames become usable.
+- Risk: one wrong "yes" now adds up to 8 wrong boxes instead of 1 (and one right "yes" adds up to 8 right ones). Guards: the strict
+  link rule and the 8-frame limit; the audit spot checks (task 29) still sample single agreed boxes; the drift report should show the
+  "no" rate for track questions separately. Audit questions (task 29) are never grouped.
+- How: own code in `selflabel.py` (numpy/IoU only, reuse `autobox.iou`); question records get `"members": [{"frame", "box", "score"}]`;
+  log line "N per-frame questions grouped into M questions". Tests: 6 neighbouring frames with the same OWLv2-only key box shifting a
+  little -> 1 question, and "yes" makes all 6 frames trainable (when they have no other open questions); two different objects in the
+  same frames -> 2 questions; a gap of 3 frames starts a new track; a 10-frame run becomes 2 tracks (8 + 2); "no" adds no box anywhere.
+- Expected gain: depends on how long objects stay in view in real walks; if a one-labeller object is typically seen in 3-6 frames,
+  the same 20 answers cover roughly 3-6 times as many frames. The walk log line will show the real ratio. Licence: own code.
+
+### Considered but not recommended
+- **SAM 2 / SAM 3 video propagation to build tracks:** better tracks, but needs a large extra model in the loop, and on 10-29 and 11-07
+  the advice was to wait. Simple IoU linking is enough when frames are only 0.5 s apart.
+- **Carrying unasked questions (those past the cap of 20) to the next run:** they are lost today and their frames stay held back. With
+  grouping, far fewer questions should fall past the cap; revisit if the walk log keeps showing "over the cap".
+- **k-center / spacing rules to spread questions over a walk (CUTAL, 2026):** useful when many different questions compete; grouping
+  removes most of the duplicates it guards against. Revisit if a walk regularly has more than 20 tracks.
+- **New detectors / depth:** nothing new under Apache-2.0 in Nov 2026.
+
+### For Alex to decide
+- Nothing new today. Still open: fresh gold photos when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3
+  Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Ince, Koksal, Fazla, Alatan, Semi-Automatic Video Annotation for Object Detection (tracklet verification, ICIP 2021): https://arxiv.org/abs/2101.06977v3 , https://www.emergentmind.com/papers/2101.06977
+- SPAM: A Video Label Engine for Efficient Tracking Annotations (track-centric labelling, 2024): https://arxiv.org/pdf/2404.11426.pdf , https://chatpaper.com/paper/15360
+- CUTAL, Clip-level Uncertainty and Temporal-aware Active Learning for End-to-End Multi-Object Tracking (May 2026): https://arxiv.org/pdf/2605.09858 , https://www.themoonlight.io/review/clip-level-uncertainty-and-temporal-aware-active-learning-for-end-to-end-multi-object-tracking
+- Exploring Diversity-based Active Learning for 3D Object Detection (redundant frames from uncertainty-only picks): https://arxiv.org/html/2205.07708v3
+- Sampling Strategies for Efficient Training of Object Detectors (frame redundancy in video, 2025): https://arxiv.org/html/2505.18302v2
+- Detector licences: https://cdn.jsdelivr.net/gh/roboflow/rf-detr@develop/README.md , https://learnopencv.com/yolov26-real-time-deployment/ , https://lightly.ai/blog/best-ultralytics-alternatives-in-2026
+
+## 2026-11-15
+
+**Summary.** Six pull requests are open. #48 (research 11-14) already contains #47 (task 27), #46, #45, #43 and #42, so I started
+from #48. The last few entries were all about the gold-set gate. Today I looked at a different risk in the self-learning loop:
+**self-labels follow what the model already does well.** A walk frame only becomes training data when the current detector and OWLv2
+agree. Keys are small and OWLv2 often misses them, so most self-labels will be shoes and bottles. When the 30% cap applies, frames are
+picked at random, so that skew carries straight into training, walk after walk. The self-training literature calls this the "Matthew
+effect": strong classes get stronger and weak ones drift toward zero (Debiased Self-Training, NeurIPS 2022; IceBerg, WWW 2025;
+a 2025 domain-adaptive detection study that saw rare-class pseudo-labels get worse over rounds). Sbeyti et al. (TMLR 2025) fix it in
+detection with class-aware batch sampling ("Rare Class Focus"). On 10-25 I wrote "revisit class balancing only if Alex's own footage skews
+one class". Self-labelled walks are exactly that case. I also looked at **label-free ways to notice the model getting worse in new
+places** (BoS score, ICLR 2024; PCR, ICCV 2025). The cheapest version we can use is a number the loop already computes: how often the
+detector and OWLv2 agree, per object. **Two roadmap changes:** a new task 29b and a refinement of task 29. Nothing new on detectors
+(still no new Apache-2.0 release; RF-DETR Nano-Large, DEIMv2, D-FINE remain the open options) or depth. arxiv.org and most paper sites
+were not reachable from this session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Rarest object first when the self-label cap applies (new task 29b; small effort, low risk).**
+- What: `cap_self_share` keeps self-labelled frames at no more than 30% of training by picking frames at random. Random picking keeps
+  the walk's mix, and that mix leans toward what the current model already finds well. Sbeyti et al. 2025 make sure every batch has
+  rare-class images, and note that resampling whole images only partly helps, because each image keeps its own class mix. Our version
+  works at the selection step: put each frame in the group of the rarest object it contains, shuffle each group with the seed, then
+  take frames round-robin with the rarest group first until the cap is reached.
+- Why here: the cap starts to apply after about 2-3 walks (30/70 × ~900 original photos ≈ 390 frames; a 2-minute walk gives up to ~240
+  frames after removing duplicates). From then on, every retrain picks which self-labels to use. Keys are already the weakest object,
+  and a "no object worse by 2 points" gate can only refuse a bad candidate. It cannot add key examples. This keeps all the scarce key
+  self-labels and drops extra shoe frames instead.
+- How: only `selflabel.cap_self_share` changes (plus one log line in the loop summary: "self-labelled boxes used: keys 40 of 40,
+  water_bottle 150 of 300, shoes 150 of 620"). Under the limit, nothing changes. The 30% share, the agreement rules and the gate stay
+  the same. Tests: 10 key + 100 shoe frames with room for 30 → all 10 key frames picked; same seed → same pick; under the limit →
+  unchanged.
+- Expected gain: protects key recall over many walks, but the size is unknown. The gold gate measures it, and the per-object counts
+  make the skew visible. Risk: if some key self-labels are wrong, keeping all of them gives the errors more weight. The task-29 spot
+  checks (audit, 11-12) report the share of wrong boxes per object, which is the guard. Licence: own code.
+
+**2. Detector-OWLv2 agreement rate per object as an early warning (refines task 29; small effort, low risk).**
+- What: label-free performance estimation for detectors (BoS, ICLR 2024: box stability under feature dropout tracks mAP, R² > 0.94 in
+  their tests; PCR, ICCV 2025: consistency of candidate boxes) shows that disagreement in predictions goes with lower accuracy. We already
+  run two independent labellers on every frame, so the share of boxes they agree on, per object, is a free signal of the same kind.
+- Why here: the gold score of the *current* model only changes when a model is promoted, so on its own it cannot show that a new room
+  or new lighting is hard. The agreement rate is measured on every new walk. Caveat from the drift literature (ICLR 2026 workshop):
+  label-free drift signals often raise false alarms on harmless shifts. So this is a warning line only, with a high bar (3 walks in a
+  row, 15+ points below the earlier median, at least 10 boxes per walk). The summary names the gold set and spot checks as the real test.
+- How: count per object in `selflabel.label_walk` (agreed / detector-only / OWLv2-only, before the steadiness rule), save it in the walk
+  stats, and let the drift report compute the rates and the warning. Tests with fake stats (see task 29).
+- Gain: notices, without labels, that a place or object is getting harder before many walks have gone into training. Licence: own code.
+
+### Considered but not recommended
+- **BoS score itself (feature-dropout box stability, ICLR 2024; code on GitHub, licence not checked from here):** needs dropout put into
+  the detector backbone and extra passes per frame. The two-labeller agreement rate gives a similar signal for free.
+- **PCR AutoEval (ICCV 2025):** needs a "meta-dataset" of many shifted labelled sets to fit the mapping to mAP. Too heavy for us.
+- **Rare Class Collage / copy-pasting key crops into walk frames (TMLR 2025; 2026 T-IV multi-round self-training with copy-paste):**
+  the project already has copy-paste compositing (task 23 series). Adding self-labelled key crops would paste possibly wrong labels
+  into many images. Wait for the audit numbers to show key self-labels are reliable.
+- **Lower OWLv2/detector cut-offs for keys in self-labelling (class-adaptive thresholds, Li et al. 2021):** more key self-labels but more
+  wrong ones, against Alex's "only confident labels where both agree" rule. Per-object cut-offs (23m) already exist for the detector.
+- **New detectors / depth:** nothing new under Apache-2.0 in Nov 2026. YOLO26 is AGPL.
+
+### For Alex to decide
+- Nothing new today. Still open: fresh gold photos when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16), Depth Anything V3
+  Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Sbeyti et al., Building Blocks for Robust and Effective Semi-Supervised Real-World Object Detection (TMLR 2025): https://arxiv.org/html/2503.18903 , https://mlanthology.org/tmlr/2025/sbeyti2025tmlr-building/
+- Debiased Self-Training for Semi-Supervised Learning (NeurIPS 2022): https://arxiv.org/pdf/2202.07136v3.pdf
+- IceBerg, debiased self-training and the Matthew effect (WWW 2025): https://www.arxiv.org/pdf/2502.06280
+- Large Self-Supervised Models Bridge the Gap in Domain Adaptive Object Detection (rare-class pseudo-label decay, 2025): https://arxiv.org/pdf/2503.23220
+- Improving Object Detection Through Self-Training With Accurate Labeling and Class Balancing (IEEE T-IV 2026): https://trid.trb.org/View/2685920
+- Rethinking Pseudo Labels for Semi-Supervised Object Detection (class-adaptive thresholds): https://arxiv.org/pdf/2106.00168
+- Bounding Box Stability against Feature Dropout (BoS, ICLR 2024): https://ar5iv.labs.arxiv.org/html/2403.13803 , code https://github.com/YangYangGirl/BoS
+- Yoo et al., Automated Model Evaluation for Object Detection via Prediction Consistency and Reliability (ICCV 2025): https://openaccess.thecvf.com/content/ICCV2025/papers/Yoo_Automated_Model_Evaluation_for_Object_Detection_via_Prediction_Consistency_and_ICCV_2025_paper.pdf
+- Drift detectors and false alarms on benign shifts (ICLR 2026 workshop poster): https://utw10244.utweb.utexas.edu/pubs/neves_iclr26_poster.pdf
+- Detector licences overview (RF-DETR, DEIMv2, YOLO26): https://blog.roboflow.com/best-object-detection-models/ , https://playground.roboflow.com/models/ultralytics/yolo26
+
+## 2026-11-14
+
+**Summary.** Five pull requests are open. #47 (task 27, retrain + quality gate) already contains #42, #43, #45 and #46, so I started
+from #47. The next code is task 28 (the learning-loop notebook), and the first time that notebook runs it must measure the **noise
+floor**: how much the gold-set score moves just from changing the random seed. Task 27 measures it once, with 3 seeds, as max minus
+min, and then uses that single number for every later walk. I checked how reliable that is. A quick simulation (my own, normal
+seed noise) shows that with 3 seeds there is about a **1 in 6 chance the measured floor comes out under half its typical size**, and
+then the gate would let "lucky seed" candidates through for as long as the floor is kept. With 5 seeds and a standard-deviation-based
+floor this drops to about 1 in 15. The variance literature (Bouthillier et al., MLSys 2021; Roboflow100-VL 2025, which ran 10 seeds
+per dataset because single-dataset spread is large) agrees that a handful of seeds is a minimum on small datasets. **One small
+roadmap change** (refines task 28). Nothing new on detectors (no new Apache-2.0 release found for Nov 2026; RF-DETR Nano-Large is
+still the open option) or depth models. arxiv.org, research.google.com and proceedings.mlsys.org were not reachable from this
+session, so paper details come from search summaries (provisional).
+
+### Recommendations
+
+**1. A steadier noise floor: 5 seeds, standard deviation instead of max - min, saved seed by seed (refines task 28; small effort, low risk).**
+- What: the gate in task 27 promotes a candidate only if its gold-set gain beats the noise floor (plus the bootstrap and per-object
+  rules). The floor is measured once and kept. With only 3 seeds, max - min is a very jumpy estimate. Simulation with seed noise of
+  size σ (400,000 draws):
+
+  | rule | typical floor | chance floor < half its typical size | candidate with NO real gain passes the floor rule |
+  |---|---|---|---|
+  | 3 seeds, max - min (today) | 1.6σ | 16% | 15% |
+  | 5 seeds, max - min | 2.3σ | 7% | 8% |
+  | 5 seeds, 2.5 × std | 2.3σ | 7% | 8% |
+
+  The last column ignores the gate's other rules (the gold bootstrap lower bound > 0 also has to pass), so real false promotions are
+  rarer, but the bootstrap only covers "which gold photos", not "which seed", so the floor is the only guard against seed luck.
+  Power is about the same: a true gain of 3σ passes the floor rule ~66% of the time with 5 seeds (vs ~79% with today's looser rule).
+- Why std rather than max - min with 5 seeds: same numbers now, but max - min grows as seeds are added, while the standard deviation
+  does not, so topping up seeds later (or after a disconnect) never makes the gate stricter by accident. 2.5 ≈ one-sided 95% for the
+  difference of two single runs (1.645 × √2 = 2.33), rounded up a little because σ is itself estimated from 5 runs.
+- How (task 28 notebook + `retrain.py`): `NOISE_SEEDS = (0, 1, 2, 3, 4)`; floor = `2.5 * np.std(gold_maps, ddof=1)`. Write each
+  seed's gold mAP into `noise_floor.json` as soon as its training finishes (atomic write, as `_write` already does), with the recipe.
+  A free Colab session has no guaranteed length (Google does not publish the limits; ~12 h max and idle cut-offs are commonly
+  reported), and 5 trainings may not fit in one sitting, so the next run trains only the missing seeds. Until all 5 exist the gate
+  does not promote and says "noise floor: N of 5 seeds measured". Each seed is scored on gold once and logged once (keeps the
+  gold-use count from 11-13 honest). A floor already saved with 3 seeds is topped up with seeds 3 and 4 rather than re-measured.
+- Tests (CPU, fake gold scores, no training): floor equals 2.5 × sd; after a simulated stop at seed 2 the next run trains only seeds
+  3-4; with 4 of 5 seeds the gate does not promote and says why; an old 3-seed file is topped up.
+- Gain: fewer "lucky seed" promotions over many walks, at the cost of 2 extra trainings, once. Licence: own code, numpy only.
+
+### Considered but not recommended
+- **Probability-of-outperforming test with many seeds per candidate (Bouthillier et al. 2021):** the gold standard for comparing two
+  recipes, but it needs several trainings per candidate on every walk; too slow for a free Colab loop. The one-off seed spread is the
+  affordable version.
+- **Using training-log statistics to sharpen comparisons (arXiv 2608.02705, ICML 2026):** early-training logs used as covariates cut
+  uncertainty in their vision study, but the authors warn that picking the "best" log statistic adds noise. Too fiddly for now.
+- **Calling `drive.flush_and_unmount()` at the end of the loop notebook:** blogs recommend it so buffered Drive writes are saved, but
+  in task 28 Alex's yes/no clicks are saved to Drive *after* the cells finish, so unmounting at the end would break them. No official
+  source found on how Colab's Drive mount buffers writes; the atomic write already in `_write` is the safe part.
+- **LLMDet / MM-Grounding-DINO as an alternative or third labeller:** one practitioner benchmark (Jan 2026) rates LLMDet above OWLv2 in
+  zero-shot accuracy, but I could not confirm the licence of the weights from this session. Revisit only if review batches are too big
+  (same trigger as the SAM 3 idea from 11-07).
+- **New detectors:** none with Apache-2.0 weights found for Nov 2026. YOLOv10/v12/YOLO26 remain AGPL.
+
+### For Alex to decide
+- Nothing new today. Still open from earlier: fresh gold photos when the wear warning appears (11-13), RF-DETR / DEIMv2 (10-16),
+  Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Bouthillier et al., Accounting for Variance in Machine Learning Benchmarks (MLSys 2021): https://arxiv.org/abs/2103.03098 , PDF https://proceedings.mlsys.org/paper_files/paper/2021/file/0184b0cd3cfb185989f858a1d9f5c1eb-Paper.pdf
+- Bouthillier thesis summary (data splits are the biggest variance source): https://umontreal.scholaris.ca/items/a2f53797-81b4-4fbd-8045-3cbc143549d2
+- Colas et al., How Many Random Seeds? (power analysis for seed counts): https://arxiv.org/pdf/1806.08295
+- Roboflow100-VL (10 runs per dataset; single-dataset variance is high): https://arxiv.org/pdf/2505.20612
+- Can Training Logs Make Model Comparisons More Precise? (ICML 2026): https://arxiv.org/pdf/2608.02705 , https://icml.cc/virtual/2026/79983
+- Colab limits are unpublished and variable (third-party summaries of the FAQ): https://gpuperhour.com/blog/free-cloud-gpus-and-credits , https://www.hivenet.com/post/google-colaboratory-gpu-complete-guide-to-free-cloud-gpu-access-and-limitations
+- Drive flush advice (blog): https://towardsai.com/p/education/use-google-colab-like-a-pro ; open Drive mount bug (Apr-Nov 2026): https://github.com/googlecolab/colabtools/issues/5944
+- Zero-shot detector benchmark incl. LLMDet vs OWLv2 (Jan 2026): https://towardsai.net/p/machine-learning/benchmarking-zero-shot-object-detection-a-practical-comparison-of-sota-models
+- RF-DETR licences: https://playground.roboflow.com/models/roboflow/rf-detr
+
+## 2026-11-13
+
+**Summary.** Three pull requests are open. #45 (research 11-12) already contains #43 (task 26) and #42 (research 11-11), so I started
+from #45. The next code is task 27 (retrain + quality gate), so today I looked at a risk nobody had covered yet: **wearing out the gold
+set**. Every walk, a new candidate model is checked against the same small, fixed gold set, and only the ones that look better are kept.
+Each check leaks a little information about the gold photos into the choice of model. Over many walks, a model can end up "good at the
+gold set" rather than good in general, and the gold score of a promoted model is a bit too optimistic (the "winner's curse"). The
+research (Dwork et al. 2015 reusable holdout; Blum & Hardt 2015 "Ladder"; ease.ml/ci test-set budgets; Kaggle and ImageNet re-test
+studies 2019) says two things. First, the gate already follows the safest simple pattern: promote only when the gain clears a margin
+(the Ladder idea). Second, in practice the harm is small *if* the test set is used only for that yes/no decision and the candidates are
+similar, which ours are. So the risk is manageable, but only if the code keeps to a few rules: one candidate per check, never choose
+settings on gold, and count how often gold has been used. **One small roadmap change** (refines task 27). Nothing new on detectors or
+depth models (no new Apache-2.0 detector found for Oct/Nov 2026; RF-DETR Nano-Large is still the open option on Alex's list).
+arxiv.org and several blogs were not reachable from this session, so paper details are from search summaries (provisional).
+
+### Recommendations
+
+**1. Use the gold set only for the yes/no promotion, and count how often it is used (refines task 27; small effort, low risk).**
+- What: "adaptive overfitting" means picking models by their score on a test set that is used again and again. Formal guarantees need a large
+  test set: with a Hoeffding bound over all pass/fail histories (the approach of ease.ml/ci, MIT), keeping a ±5-point error at 95% confidence
+  over 20 checks needs roughly `(20·ln2 + ln 20) / (2·0.05²)` ≈ 3,400 test items. That is my own rough calculation in the spirit of the paper.
+  Our gold set will have tens to a few hundred photos, so a formal guarantee is out of reach. The practical evidence is reassuring under
+  conditions we can enforce. The Kaggle meta-analysis (Roelofs et al., NeurIPS 2019; 100+ competitions) and the ImageNet/CIFAR re-tests found
+  little real overfitting from test reuse, and Mania et al. 2019 show it is smaller still when the compared models are similar. The Ladder
+  (Blum & Hardt 2015) shows that "accept only if the gain beats a margin" is what limits the leak, and task 27 already does that (lower bound
+  > 0 plus noise floor). What breaks these protections is using the test score for anything more than that one decision: best-of-several
+  seeds, choosing settings, re-running a candidate until it passes.
+- How (task 27, in the gate code, e.g. a `gold_gate` / `promote` function):
+  - **Exactly one candidate meets the gold set per loop run.** If a run tries a second candidate, refuse with a clear message. Seeds, `--init`,
+    augmentation settings, score cut-offs (23m) and early stopping are chosen on the validation split only, never on gold. The one-off
+    noise-floor measurement (3 seeds) is logged as gold uses, but its models are never promotion candidates.
+  - **Gold-use log** in Drive `claudeknows_models/gold_log.json`: one row per gold check (date, candidate name, verdict, overall difference and
+    range, `kind`: "gate" or "noise-floor"). The summary prints "gold set used N times since <created date>".
+  - **Wear warning:** `GOLD_LOOK_BUDGET = 20` gate checks (constant in config). After that, the summary adds one line: "the gold set has been
+    used for 20+ decisions; its scores are getting optimistic. Consider adding fresh checked photos (see RESEARCH.md 2026-11-13)". This is a
+    warning only: the gate keeps working and the gold set is never changed by the loop.
+  - **Honest wording for promotions:** report the gain as "at least +X" using the lower end of the paired range, with the middle value in
+    brackets, so the winner's curse does not inflate the headline.
+- Tests (CPU, fake results): a second candidate in one run is refused; every gate and noise-floor check adds one log row; the warning appears
+  at 20 gate checks and not at 19; the promotion message uses the lower bound.
+- Gain: keeps the gold set honest for many more walks, at almost no cost. It also gives a clear signal for when Alex should add fresh checked
+  photos, instead of a silent drift toward over-optimistic scores. Licence: own code, no new library.
+
+### Considered but not recommended
+- **Differentially private "reusable holdout" / Thresholdout (Dwork et al. 2015):** adds noise to every gold score. With a gold set this small
+  the noise would swamp real differences. The one-candidate rule plus the existing margin gets most of the benefit.
+- **Splitting gold into a "gate" half and a "sealed" half checked rarely:** a clean check for wear, but it halves an already small set, and the
+  gate already refuses to auto-promote with fewer than 5 gold scenes. Fresh additions (see "For Alex to decide") do the same job better.
+- **ease.ml/ci formal sample-size budgets:** right idea, but needs thousands of gold items. Only the "count uses, warn when spent" part is kept.
+- **Using walk frames where neither labeller sees anything as extra background photos:** the co-training detection work (arXiv 2008.05534)
+  warns that self-labelled "empty" frames hide missed objects and should not be used as negatives. Keys are small and OWLv2 misses them, so
+  today's rule (empty walk frames are not used; negatives come from Open Images and Alex's `empty/` folder, 23d) is the right one.
+- **New detectors:** no new Apache-2.0 detector release found for Oct/Nov 2026. RF-DETR Nano to Large (Apache-2.0) is still the open option.
+
+### For Alex to decide
+- **Adding fresh gold photos later (only when the wear warning appears, so not yet):** your rule says the gold set is fixed and never changed
+  by the loop. When the warning fires, the clean fix is for *you* to check a new batch of photos from recent walks (same review step as task
+  25b) and freeze it as a second gold batch. The first batch stays exactly as it is, and both batches are scored separately, so it is easy to
+  see whether the old batch has become too easy. If you are happy with that, say so and I will plan it as a task. Otherwise nothing to do.
+- Still open from earlier: RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an optional third labeller (11-07).
+
+### Sources
+- Dwork et al., The reusable holdout (Google Research blog, 2015): https://blog.research.google/2015/08/the-reusable-holdout-preserving.html
+- Blum & Hardt, The Ladder: a reliable leaderboard for ML competitions (2015): https://www.arxiv.org/abs/1502.04585 , summary https://sotaverified.org/papers/the-ladder-a-reliable-leaderboard-for-machine
+- Hardt, Climbing a shaky ladder (2017): https://ar5iv.labs.arxiv.org/html/1706.02733
+- ease.ml/ci, Continuous integration of ML models (test-set reuse budgets, MIT): https://arxiv.org/pdf/1903.00278 , https://github.com/easeml/ci
+- A Data Quality-Driven View of MLOps (test-set reuse, alarms): https://arxiv.org/pdf/2102.07750
+- Roelofs et al., A Meta-Analysis of Overfitting in Machine Learning (NeurIPS 2019): https://papers.nips.cc/paper/9117-a-meta-analysis-of-overfitting-in-machine-learning
+- Mania et al., Model Similarity Mitigates Test Set Overuse (2019): https://arxiv.org/pdf/1905.12580
+- Efficient Lifelong Model Evaluation (ever-growing test pools): https://arxiv.org/pdf/2402.19472
+- Co-training for On-board Deep Object Detection (self-labelled negatives hide missed objects): https://arxiv.org/pdf/2008.05534
+- Self-training and adversarial background regularization (false negatives in hard-negative mining): https://arxiv.org/pdf/1909.00597
+- RF-DETR licences (Nano-Large Apache-2.0, XL/2XL PML): https://playground.roboflow.com/models/roboflow/rf-detr
+
+## 2026-11-12
+
+**Summary.** Two pull requests are open: #43 (task 26, auto-labelling) already contains #42 (yesterday's research), so I started from #43.
+Earlier entries cover the detector, augmentation, depth and the retrain gate in depth, so today I looked at the two loop tasks nobody had
+researched yet: task 28 (the "Run all" learning-loop notebook with yes/no buttons) and task 29 (the drift report). I found one practical trap
+and one measurement gap. (1) In Jupyter/Colab, button clicks are handled only when no cell is running, so during "Run all" every later cell runs
+before Alex can click anything: the notebook must not wait for clicks; answers should be saved as they are given and used on the next run. (2)
+The drift report plans to track "how often self-labels were later corrected", but in our design nobody ever looks at the *accepted* labels
+again, so that number would always look fine. A small random spot check (3 accepted boxes per walk mixed into the review batch) measures the
+auto-label error rate directly. Both are small refinements of unchecked tasks. No new detector, depth model or torchvision change alters the
+plan (torchvision 0.26 is a small release with no detection changes found; RF-DETR Nano-Large remains the Apache-2.0 alternative already on
+Alex's list). Several pages were not reachable from this session, so some details are from search summaries (provisional).
+
+### Recommendations
+
+**1. Learning-loop notebook: never wait for clicks; review comes last and counts next time (refines task 28; small effort, low risk).**
+- What: Jupyter processes widget events (button clicks) only while the kernel is idle. During "Run all" the cells below a button run straight
+  away, before any click (Jupyter Discourse thread; the `jupyter-ui-poll` README says plain widgets "break Cells -> Run All"). Libraries that
+  block a cell until a click exist (`jupyter-ui-poll`, MIT; `ipython_blocking`), but Colab support is not documented, and blocking would also
+  stop phase 4 (training without Colab clicks).
+- How (task 28): order the notebook import walk (24) -> auto-label (26) -> retrain + gate (27) using frames trainable *now* (including answers
+  from earlier walks) -> show the review batch last. Each yes/no click calls `selflabel.apply_answers` straight away and the file is saved to
+  Drive, so the answers count in the next run. The summary says "N questions waiting; answers will be used next time". Use plain `ipywidgets`
+  (preinstalled in Colab): one photo with the box drawn, "Is this a <object>?", Yes / No buttons, next question on click.
+- Do not show the score or which labeller saw the box: practitioner guides warn that reviewers tend to agree with labels shown as machine output,
+  which would hide real mistakes.
+- Test: with no answers the loop still runs to the end; answers saved after a run make those frames trainable in the next run.
+- Gain: the notebook works with one "Run all" as Alex asked, and stays ready for phase 4. Licence: no new library.
+
+**2. Spot-check a few accepted auto-labels per walk to measure their real error rate (refines task 29; small effort, low risk).**
+- What: the review batch only asks about *uncertain* boxes. The boxes both labellers agreed on go straight into training and are never seen by
+  a person, so "how often self-labels were later corrected" would stay near zero even if the labellers were making a steady mistake (for example
+  both calling a thermos a water bottle). Labelling-quality guides recommend a small, *random*, scheduled audit of accepted items with a confidence
+  range. Threshold-based auto-labelling work (Vishwakarma et al., NeurIPS 2023 workshop) likewise relies on human-checked samples to bound the
+  error of machine labels.
+- How: in `selflabel.label_walk` pick `AUDIT_PER_WALK = 3` agreed, steady boxes at random (seeded by walk name so reruns ask the same ones)
+  and add them to the review batch as ordinary-looking questions with `"why": "audit"`. They count toward the cap of 20 and are mixed in
+  rather than sorted by disagreement. They never hold a frame back; "no" removes that box from the labels. Log every audit answer in Drive
+  `claudeknows_models/audit.json`. The drift report (29) shows, per object and overall: audits done, share wrong, and a 95% Wilson range
+  (`(p + z²/2n ± z·sqrt(p(1-p)/n + z²/4n²)) / (1 + z²/n)`, z = 1.96, numpy only). Warn when the lower end is above 5%. Below 20 audits, say "too
+  few checks yet". Report the "no" rate of normal review questions separately, because it describes the uncertain boxes, not the accepted ones.
+- Tests: same walk name -> same audit picks, and only agreed boxes are picked; 0 wrong out of 20 -> range about 0-16%; a "no" on an audit
+  question removes the box.
+- Cost: 3 of Alex's ~20 questions per walk. After about 7 walks there is a first honest estimate of how clean the auto-labels are. That is
+  the number that says whether the loop is teaching the model its own mistakes. Licence: none (own code).
+
+### Considered but not recommended
+- **`jupyter-ui-poll` / `ipython_blocking` to pause "Run all" until Alex answers:** MIT, small, but Colab support is not documented, and a paused
+  notebook cannot run unattended (phase 4). Answers-count-next-run is simpler.
+- **pigeonXT (ready-made notebook annotation widget):** fine for yes/no classification, but we need a box drawn on each photo and answers written
+  straight to `selflabel`; about 30 lines of plain `ipywidgets` do that without a new dependency.
+- **Auditing the rejected/dropped boxes too (to estimate missed objects):** useful in principle, but it costs more of Alex's questions. The gold
+  set already measures recall. Revisit only if gold recall drops.
+- **Periodic multi-round self-training with label-quality and class-balancing steps (IEEE T-IV 2026):** same ingredients as our tasks 26-27
+  (agreement, cut-offs, replay); nothing new to add.
+- **New detectors (YOLO26, Jan 2026):** AGPL-3.0, ruled out. No new Apache-2.0 detector released in Oct/Nov 2026 found.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an optional third
+  labeller (11-07).
+
+### Sources
+- Jupyter Discourse, "Wait for specific user input from widgets": https://discourse.jupyter.org/t/wait-for-specific-user-input-from-widgets/11436
+- jupyter-ui-poll (MIT; README on Run All behaviour): https://github.com/kirill888/jupyter-ui-poll
+- ipython_blocking: https://pypi.org/project/ipython-blocking/
+- pigeonXT notebook annotation: https://github.com/bramiozo/pigeonXT
+- ipywidgets in Colab (preinstalled, `on_click`): https://www.plus2net.com/python/ipywidgets.php
+- Understanding Threshold-Based Auto-Labeling (Vishwakarma et al., NeurIPS 2023 workshop): https://mlanthology.org/neuripsw/2023/vishwakarma2023neuripsw-understanding
+- Roboflow, human-in-the-loop (override/correction rate, reviewer deference): https://blog.roboflow.com/human-in-the-loop-ai/
+- Kili, model evaluation workflow from build to monitor: https://kili-technology.com/blog/ai-model-evaluation-workflow-build-to-monitor
+- Exploring Test-Time Adaptation for Object Detection in Continually Changing Environments (per-class thresholds, skip unneeded updates): https://arxiv.org/html/2406.16439v4
+- Self-training with accurate labelling and class balancing (IEEE T-IV 2026): https://trid.trb.org/View/2685920
+- torchvision 0.26 release: https://newreleases.io/project/pypi/torchvision/release/0.26.0
+- YOLO26 (AGPL, Ultralytics): https://blog.roboflow.com/yolo26/
+
+## 2026-11-11
+
+**Summary.** No open pull requests, so I started from `main`. No real training run exists yet; the next code is task 26 (auto-labelling walk
+frames), then 27 (retrain + quality gate). Earlier entries already cover labelling, so today I looked at the retraining step: should each new
+model version **start again from the original pretrained (COCO) weights** or **carry on from the current model** ("warm start")? Task 27 does
+not say, and the choice affects how honest the quality gate is. The evidence is mixed: a NeurIPS 2025 paper found warm starts generalise as well
+as fresh starts under normal recipes with augmentation; NeurIPS 2024 work (DASH) found warm-started networks keep *memorised noise*, which is
+exactly the risk when part of the data is self-labelled. For this project the deciding points are practical: a fresh start stops one version's
+mistakes leaking into the next through its weights, it matches how the noise floor in task 27 is measured, and a full retrain on a few
+hundred photos is cheap on a free Colab GPU. So I made **one small roadmap change**: task 27 now says to start every candidate fresh, with an
+optional warm-start comparison. I also looked for new small Apache-licensed depth models, torchvision detection changes and continual-learning
+papers for robots; nothing there changes the plan. arxiv.org, alphaxiv.org and neurips.cc were not reachable from this session, so the papers
+were read from search summaries only (provisional).
+
+### Recommendations
+
+**1. Every retrain starts from the original pretrained weights, not from the current model (refines task 27; very small effort, low risk).**
+- What: in the learning loop, build each candidate with `build_detector(pretrained=True)` (COCO weights, new 3-object head), exactly as the
+  normal training recipe does (23a), and train it on all approved data (replay set + self-labels). Do **not** load the current promoted model's
+  weights as the starting point. Store `init: "coco"` (or `"current"`) in each saved checkpoint and in the loop summary.
+- Why here: (a) the current model is also one of the two labellers in task 26, so warm-starting would feed its errors back twice, through the
+  labels and through the weights. DASH (NeurIPS 2024) traces most warm-start problems to memorised noise, and self-labels are the noisiest data
+  we have. (b) Task 27's noise floor is measured as the spread of gold mAP over 3 seeds of the *current recipe*. That is a fresh-start
+  recipe, so fresh-start candidates are a like-for-like comparison. (c) Every version can be re-made from data + settings alone, which
+  makes rollback and debugging easier. (d) The counter-evidence (NeurIPS 2025: no generalisation loss from warm starts with standard
+  augmentation) means warm start is not clearly *worse*, so it stays as an option to test, not a ban.
+- Expected gain: mainly safety and clear comparisons. Probably 0 to a few mAP points, not measurable until real walks exist. Cost: a full
+  training run per retrain (minutes to tens of minutes on a T4 at our data size, resumable thanks to 23n).
+- How: `train_candidate(..., init="coco")` (CLI `--init coco|current`, default `coco`). `init="current"` loads the promoted model's
+  state dict before training (same LR schedule, warm-up included). Optional one-off comparison once 3+ walks exist: both settings on the same
+  data, judged with the paired gold-set difference from 23f/27; switch the default only if `current` is clearly better on the gold set.
+- Test (CPU, `weights=None`): with `init="coco"` the candidate's starting weights equal a freshly built model with the same seed and differ
+  from the current model's; with `init="current"` they equal the current model's; the checkpoint records `init`.
+- Licence: no new code or weights (torchvision BSD-3, COCO weights as already used).
+
+### Considered but not recommended
+- **Shrink-and-perturb / DASH (partial weight reset before each retrain):** a middle road between fresh and warm starts. Tested mostly on CIFAR
+  classifiers, not detectors. A fresh start from COCO is simpler and cheap at our size.
+- **Replay-based continual learning for indoor drones (arXiv 2602.13440, Feb 2026; ER / MIR / forgetting-aware replay with 5-10% buffers):**
+  built for adding *new classes* on a small memory budget with YOLOv11 (AGPL). We keep all old data and already replay >= 50% of it (task 27).
+- **Depth Anything 3 small metric checkpoint:** one third-party page lists a "dav3-metric-small", but I found no official model card or licence
+  for it. The official metric model is still Large only. Depth Anything V2 Small stays (Alex's choice).
+- **Torchvision 0.25 / 0.26 detection changes:** found no detection-model changes; recent releases focus on keypoints and rotated boxes.
+  Nothing to adopt.
+- **Score-percentile pseudo-label thresholds against drift (LiDAR self-training, arXiv 2203.15882):** our per-object F1 cut-offs (23m) plus the
+  two-labeller agreement rule already do this job.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as an optional third
+  labeller (11-07).
+
+### Sources
+- Revisiting Warm-Start Training: No Generalization Loss under Standard Training Schemes (NeurIPS 2025): https://neurips.cc/virtual/2025/123884
+- DASH: Warm-Starting Neural Network Training in Stationary Settings without Loss of Plasticity (NeurIPS 2024): https://proceedings.neurips.cc/paper_files/paper/2024/hash/4c5ce1fc8895076f49935951a630be5c-Abstract.html
+- Ash & Adams, On Warm-Starting Neural Network Training (shrink-and-perturb): https://arxiv.org/abs/1910.08475
+- When Does Re-initialization Work?: https://arxiv.org/pdf/2206.10011
+- Slow and Steady Wins the Race (Hare & Tortoise, plasticity vs generalisation): https://arxiv.org/html/2406.02596v1
+- Label-efficient road-side detection, alternating self-training with human-label fine-tuning: https://arxiv.org/pdf/2404.06256
+- Learning on the Fly: replay-based continual perception for indoor drones: https://arxiv.org/abs/2602.13440
+- Learning to Detect Mobile Objects from LiDAR Scans Without Labels (self-training drift): https://arxiv.org/pdf/2203.15882
+- LightlyTrain depth estimation docs (Depth Anything checkpoints and licences): https://docs.lightly.ai/train/stable/depth_estimation.html
+- torchvision on PyPI (release / compatibility table): https://pypi.org/project/torchvision
+
 ## 2026-11-07
 
 **Summary.** Started from PR #39 (newest open branch; it includes #25 to #38, so merging it is enough). Searched for a newer small-data

@@ -1,5 +1,182 @@
 # Progress log
 
+## 2026-11-18
+**This includes everything from PRs #42, #43, #45, #46, #47, #48, #49, #50, #51, #52 and #53.** Merging this one is enough;
+the others will close automatically. It also contains everything already on `main`. Note: tasks 26, 27 and 28 are marked
+done in the roadmap but are **not on `main` yet**; this PR brings them in.
+
+**Done** (roadmap tasks 29 and 29b, with the research refinements from 11-12 and 11-15)
+- **Spot checks of the automatic labels** (`selflabel.py`): each walk, 3 boxes that both labellers agreed on are picked at
+  random (the same 3 every time for the same walk) and put among your yes/no questions. They look exactly like the other
+  questions. They never hold a photo back. "No" removes that box from the photo's labels, "yes" keeps it. They count toward
+  the limit of 20 questions per walk. Your answers are logged in Drive `claudeknows_models/audit.json`.
+  Why: until now nobody ever looked at the labels the two labellers agreed on, so a steady shared mistake (say, both calling
+  a thermos a water bottle) would never show up. After about 7 walks there is a first honest estimate of how often the
+  automatic labels are wrong.
+- **Drift report** (new `claudeknows/drift.py`), added to every loop summary and saved as `drift_report.txt`. It shows:
+  - gold-set scores of the current model and each candidate, run by run (`drift_history.json`);
+  - for each object, how many spot checks were wrong, with a 95% range. It warns when the automatic labels are clearly
+    wrong more than 1 in 20 times, and says "too few checks yet" under 20 checks;
+  - the "no" share of the ordinary questions, kept separate (those are the uncertain boxes, not the accepted ones);
+  - for each object, how often the detector and OWLv2 agree on a walk. It warns only if the last 3 walks are each 15+
+    points below the earlier walks (walks with fewer than 10 boxes of that object are ignored), a hint that new rooms or
+    lighting are harder;
+  - self-labelled boxes per object in the latest walks. It warns if an object disappears for 3 walks in a row.
+  It never blocks anything. The gold-set check is still the only thing that decides on a new model.
+- **Keys first when self-labels are capped** (task 29b, `cap_self_share`): when there are more self-labelled walk photos
+  than the 30% limit allows, photos with the rarest object (probably keys) are kept first, instead of a random pick that
+  would mostly keep shoes and bottles. The summary now says e.g. "self-labelled boxes used: keys 40 of 40, water_bottle 150
+  of 300, shoes 150 of 620". Under the limit nothing changes.
+- Notebook intro and README mention the spot checks and the drift report.
+- 14 new tests (same walk gives the same spot checks, which are always accepted boxes; a "no" removes the box; spot checks
+  count toward the limit; the 0-of-20 range is about 0-16%; warning and "too few" rules for spot checks and for agreement;
+  per-object agreement counts are saved; gold drop warning; missing object warning; keys kept first under the cap; same
+  seed gives the same pick; nothing changes under the limit; the loop shows spot checks and the report). **150 tests pass.**
+
+**Next:** 29c (one question per object instead of one per photo), then 29d (keep the original training photos in Drive),
+29e (phone-camera blur/noise augmentation).
+
+**For Alex to decide**
+- Authorship check: every commit on `main` and on this branch is by Claude or by you (your web-merges show GitHub as
+  committer), so it is fine to run code from it.
+- Still open from 11-16: should I add a short "make the gold set" notebook (show candidate photos, you tick the good ones)?
+  Without a gold set no new model is ever promoted automatically. Say so in Cowork and I'll do it next, before 29c.
+- Still open from research: RF-DETR vs current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19).
+
+## 2026-11-16
+**This includes everything from PRs #42, #43, #45, #46, #47, #48, #49 and #50.** Merging this one is enough; the others
+will close automatically. It also contains everything already on `main`. Note: tasks 26 (auto-labelling) and 27 (retrain +
+quality gate) are marked done in the roadmap but are **not on `main` yet**; this PR brings them in.
+
+**Done** (roadmap task 28, the learning-loop notebook, with the research refinements from 11-06, 11-12 and 11-14)
+- New notebook `notebooks/learning_loop.ipynb`: one **Run all** that
+  1. turns new videos in Drive `claudeknows_photos/walks/` into photos (task 24),
+  2. auto-labels them with the current detector + OWLv2 (task 26),
+  3. counts the **new** approved boxes; with fewer than 30 it does **not** retrain and the summary says
+     "not enough new data (N boxes); kept current model" (those photos stay for next time),
+  4. otherwise downloads/boxes the training photos again (Colab's disk is new every session), retrains one candidate
+     and runs the gold-set check from task 27,
+  5. writes a plain-language summary to Drive `claudeknows_models/loop_summary.txt` (plus one dated copy per run),
+  6. shows the yes/no questions **last**: each one is just the photo, one box and "Is this a water bottle?" (no score,
+     no "which labeller saw it", so the answer isn't nudged). Each click is saved to Drive immediately and counts in the
+     **next** run; nothing in the run waits for clicks (Colab can't do that during "Run all").
+- New `claudeknows/loop.py` does the work (the notebook just calls it). `loop_state.json` in Drive remembers which walk
+  photos earlier retrains already used, so "new boxes" really means new. Walk photos and your answers live in Drive
+  `claudeknows_models/walk_frames/`, never in GitHub.
+- Optional setting `MEANT_TO_COVER` (empty by default): objects every walk should show, e.g. `("keys",)`; then a retrain
+  also needs 10 new boxes of each of them.
+- **Steadier noise floor** (`retrain.py`, research 11-14): measured with 5 seeds instead of 3, floor = 2.5 x their standard
+  deviation instead of max - min. Each seed is saved the moment its training ends, so a Colab disconnect costs one training
+  at most and the next run trains only the missing seeds. Until all 5 exist the gate does not promote and says
+  "noise floor: 3 of 5 seeds measured". An old 3-seed file is topped up with seeds 3 and 4, not redone. The loop notebook
+  measures it automatically the first time it retrains with a gold set.
+- 8 new tests (29 new boxes -> no retrain, 30 -> retrain; the loop finishes with no answers; "yes" answers saved after a run
+  make those photos count in the next run; nothing new since the last retrain -> skipped; the question view shows no
+  score; floor = 2.5 x sd; resume after a stop at seed 2 trains only seeds 3-4; 3-of-5 seeds never promotes; old file
+  topped up; notebook check). **137 tests pass.** Also ran the loop end to end on CPU with a tiny made-up walk and a real
+  (tiny, untrained) retrain: it labelled, retrained, kept the current model ("not enough evidence") and listed 1 question.
+
+**Next:** task 29 (drift report + spot checks of auto-labels + agreement-rate warning), then 29b (keys not crowded out),
+29c (one question per object instead of per photo).
+
+**For Alex to decide**
+- Authorship check: every commit on `main` and on this branch is by Claude or by you (your web-merges show GitHub as
+  committer), so it is fine to run code from it.
+- You can try the loop after merging: film a short walk, put it in Drive `claudeknows_photos/walks/`, open
+  `notebooks/learning_loop.ipynb` in Colab with a GPU and press Run all. It needs `claudeknows_models/detector.pt` from the
+  spatial notebook. A first walk will probably say "not enough new data" or "kept the current model" - that's expected.
+- **No new model will be promoted until there is a gold set** in Drive `claudeknows_models/gold/` (with 5+ different rooms).
+  Building it (`python -m claudeknows.gold review` / `build --save-to ...`) is not in any notebook yet. Should I add a short
+  "make the gold set" notebook (show candidate photos, you tick the good ones) as the next task, before 29? Say so in Cowork.
+- Retraining inside the loop is not resumable after a disconnect yet (the spatial notebook's training is). Fine for now;
+  tell me if Colab cuts you off mid-run.
+- Still open from research: RF-DETR vs current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19).
+
+## 2026-11-13
+**This includes everything from PRs #42, #43, #45 and #46.** Merging this one is enough; the others will close
+automatically. It also contains everything already on `main` (including #44, "always test on one of your own videos").
+Note: task 26 (auto-labelling, PR #43) is marked done in the roadmap but is **not on `main` yet**; this PR brings it in.
+
+**Done** (roadmap task 27, retrain + quality gate)
+- New `claudeknows/retrain.py`. One loop run trains **one** new candidate model and decides whether it replaces the current one.
+- **What it trains on:** your original training photos (Open Images + your checked footage) plus self-labelled walk frames
+  from task 26, with self-labelled frames capped at 30% (so the original photos are always the majority). Gold photos are
+  refused, as before. The validation photos (used to pick the best epoch and the score cut-offs) are original photos only.
+- **Fresh start every time:** each candidate starts from the standard pretrained (COCO) weights, not from the current
+  model, so the current model's mistakes can't sneak back through its weights. `--init current` exists for a later comparison;
+  the choice is saved in each model file.
+- **The gate (when a candidate replaces the current model):** both are scored on the gold set, and the difference is
+  resampled 5000 times by whole video. It is promoted only if
+  (1) it is clearly better overall (the low end of the 95% range is above 0),
+  (2) no object may have got worse by more than 2 points,
+  (3) the gain is bigger than the "noise floor" (how much the score moves just by changing the random seed), and
+  (4) the gold set covers at least 5 different scenes. Otherwise it says why, e.g. "not enough evidence: the gold set shows
+  only 3 scenes". A promotion is reported honestly as "at least +X points (middle estimate +Y)".
+- **Keeping the gold set honest:** only one candidate may meet the gold set per run (a second one is refused); every look at
+  the gold set is logged in `gold_log.json`; the summary prints "gold set used N times since <date>" and, after 20 promotion
+  checks, warns that the gold scores are getting optimistic and fresh checked photos would help.
+- **Every version kept:** each candidate is saved dated in `claudeknows_models/` (`detector_2026-11-13.pt`, `_2`, ...), and
+  `detector.pt` is always a copy of the current model (what the notebooks already load). The `detector.pt` you have from
+  before is kept as `detector_original.pt` on the first promotion. **One-line rollback:**
+  `python -m claudeknows.retrain rollback --models-dir <Drive>/claudeknows_models`. `... status` lists versions and gold uses.
+- **Noise floor:** `python -m claudeknows.retrain noise-floor ...` trains the recipe with 3 seeds once and saves the spread.
+  Until it has been measured, nothing is promoted automatically (it says so). Changing the training settings means re-measuring.
+- Also: `detector.paired_differences` (per-object paired comparison; `compare_runs` now uses it) and an `init_state`
+  option in `train_detector`.
+- 9 new tests (identical models not promoted; better overall but worse on one object not promoted; gain below the noise floor
+  not promoted; second candidate refused; one log row per check; warning at 20 checks not 19; fresh vs current start;
+  versions + rollback; a tiny end-to-end run). **129 tests pass.** Also checked the command line on a tiny made-up dataset
+  (first run becomes the current model, second run is kept out because there is no gold set).
+
+**Next:** task 28, the learning-loop notebook: one "Run all" that imports a walk, auto-labels it, retrains + gates, and shows
+your yes/no review questions last (answers count next run).
+
+**For Alex to decide**
+- Nothing new needed to continue. Nothing to run yet: this is the engine; the notebook that uses it is the next task.
+- Before the gate can ever promote a model it needs (a) a gold set with 5+ different places/scenes and (b) one noise-floor
+  run (3 short trainings in Colab, part of the task 28 notebook). If your gold set has fewer than 5 scenes, the loop will keep
+  the current model and say "not enough evidence"; filming the gold footage in more rooms fixes that.
+- Still open from research: RF-DETR vs current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19).
+
+## 2026-11-11
+**This includes everything from PR #42** (the only open `claude/*` PR: research 2026-11-11).
+Merging this one is enough; #42 will close automatically. `main` is contained in the branch.
+
+**Done** (roadmap task 26, auto-labelling of walk frames)
+- New `claudeknows/selflabel.py`. For each walk (the frames made by task 24), two "labellers" look at every frame:
+  the current detector and OWLv2. What happens to each box:
+  - **Both agree** (same object, boxes overlap, both confident) **and the object is also seen in at least 2 of the
+    4 neighbouring frames** -> it becomes a training label.
+  - **Agreed but flickers** (only in one frame): if both were very sure (>= 0.6) it becomes a question for you, otherwise dropped.
+  - **Only one labeller saw it** (confidently) -> a question for you.
+  - Boxes neither labeller was confident about are ignored.
+- **No half-labelled frames:** a frame is only used for training when every confident box in it is settled (agreed,
+  or answered by you). Otherwise it is held back, so a real object is never taught as "background".
+  Frames where nothing was found are not used either.
+- **Your review batch:** at most 20 yes/no questions per walk ("is this a shoe?"), the ones the current model disagrees
+  with most come first. `python -m claudeknows.selflabel questions <walks folder>` lists them,
+  `... answer <walks folder> --yes walk1:3 --no walk1:5` records answers; a "yes" adds the box, a "no" removes it.
+  (The buttons for this come with the learning-loop notebook, task 28.)
+- **Limit:** `cap_self_share` keeps self-labelled frames at most 30% of a training set; `self_samples` leaves out any gold walk.
+- Each walk folder gets `selflabels.json` and `review.json` next to its frames (on Colab/Drive, never committed).
+- 11 new tests (fake 5-frame walk: steady box kept, one-frame box dropped; held-back frame becomes usable after a "yes";
+  questions sorted and capped at 20); 118 tests pass.
+
+**Notes**
+- One change from the research plan: to order the questions, the plan said to use the detector's training loss in
+  "train mode". In tests that mostly measured the random background samples the detector picks, so it did not rank a
+  wrong box above a right one. Instead the proposed box is fed straight into the detector's box head and scored with
+  the same two losses ("is this that object?" + "would you move the box?"). Same idea, deterministic, and the test shows a
+  wrong box scoring far higher. It is only used for ordering; nothing is deleted because of it.
+- Nothing here needs a GPU except the real OWLv2 run, which happens in Colab (task 28 notebook).
+
+**Next**
+- Task 27 (retrain from a fresh start + the honest quality gate on the gold set), then 28 (the one-click notebook).
+
+**For Alex to decide**
+- Nothing blocking. There is nothing new for you to run yet: this step gets its notebook in task 28.
+  Authorship check: every commit on main and on this branch is by Claude or Alex (GitHub web-merges by "GitHub").
+
 ## 2026-11-09
 **This includes everything from PRs #25-#40** (all open `claude/*` PRs, including research PRs #37, #38 and #40).
 Merging this one is enough; the others will close automatically. `main` is contained in the branch.
