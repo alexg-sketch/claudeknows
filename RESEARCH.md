@@ -3,6 +3,102 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-20
+
+**Summary.** Two pull requests are open: #57 (research 11-19, which already includes `main` and the new gold-set notebook) and #55
+("survive a broken resume file", a dev branch). I started from #57, the newest; #55 is separate and not included here. Next to be coded
+are tasks 29c-29f. Yesterday's task 29f will, for the first time, measure how well OWLv2 finds each object on Alex's checked photos. Today
+I looked at the obvious follow-up: **if OWLv2 turns out weak on keys (likely), what is the cheapest way to make it better without
+training it?** OWLv2 is the gatekeeper for keys: every keys training photo is boxed by it (Open Images has no key boxes), and it is
+one of the two labellers that must agree before a walk frame becomes training data. Today it is asked with one short sentence per
+object (`autobox.PROMPTS`, e.g. "a bunch of keys"). OWLv2 can also be asked with **example pictures**: give it a few boxed examples of
+the object, turn each into the same kind of "what this object looks like" vector the text sentence produces, and average them. The
+original OWL-ViT paper reports this one-example ("image-conditioned") mode at 41.8 AP50 on COCO classes it was never trained on, against
+26.0 for the previous best method, rising to 46.8 with 10 examples averaged; Prova (AAAI 2025) found that mixing text and picture
+"prototypes" beats text alone by 3-6 AP. In this project the examples would be the boxes Alex has already said "yes" to in review
+batches (stored as `by="alex"`), plus Open Images human boxes for bottles and shoes, so OWLv2 learns what *his* keys look like in
+*his* rooms, at the cost of one extra matrix multiply per photo. I checked the `transformers` 5.23 source: the built-in
+`image_guided_detection` picks the example box automatically (the "most object-like" box in the example photo, not the one a person
+boxed), which is known to work poorly, so the task spells out the right way using the model's own `class_predictor` and
+`box_predictor`. **One roadmap change:** new task 29g, an optional "text + examples" OWLv2 mode, off by default; switching it on is
+Alex's decision once 29f shows the numbers. Nothing new on detectors: RF-DETR 1.12.0 (5 Nov 2026) only adds export metadata.
+arxiv.org, huggingface.co and mdpi.com were not reachable from this session, so paper details come from search summaries
+(provisional); the `transformers` details come from reading the installed-package source directly.
+
+### Recommendations
+
+**1. Example-boosted OWLv2 queries: "text + examples" mode (new task 29g; small-medium effort, low risk because it is off by default).**
+- What: for each object build ONE query vector `q = normalise((1 - a) * normalise(t) + a * normalise(v))`, where `t` is today's
+  text embedding (from `PROMPTS`) and `v` is the mean of the normalised embeddings of up to 20 boxed example crops of that object.
+  `a = 0` is exactly today's behaviour; try `a = 0.5` (mix) and `a = 1.0` (examples only). OWL-ViT averages example embeddings
+  the same way; Prova mixes text and picture prototypes.
+- How (verified against the `transformers` 5.23 OWLv2 source):
+  - Example embedding: run the usual forward pass on the example photo (`model(**processor(text=..., images=...))`). The output has
+    `class_embeds` (one already-normalised vector per image patch) and `pred_boxes` (one box per patch, centre-x/centre-y/w/h as
+    fractions of the padded square). Convert the example's box (fractions of the photo) to the padded square (`x * w / side`,
+    `y * h / side`, `side = max(w, h)`, as `owl_detector` already does in reverse), pick the patch whose `pred_boxes` box has the
+    highest IoU with it, and use that patch's `class_embeds`. Skip the example if the best IoU is below 0.5 (say how many were skipped).
+    Do NOT use `model.image_guided_detection`: it ignores the given box and takes the most "object-like" box in the example photo.
+  - Detection with `q`: after today's forward pass, `feats = out.image_embeds.reshape(1, -1, D)`;
+    `logits, _ = model.class_predictor(feats, query_embeds=Q[None])` (Q = the three query vectors, one per object);
+    `scores = sigmoid(logits)`; boxes = the same `out.pred_boxes`; then the same per-object cut-off and NMS as now. One extra small
+    matrix multiply per photo; no new model download.
+  - Where the examples come from (never gold, never test): `by="alex"` boxes from answered review questions (the only human key
+    boxes that exist outside the gold set), plus `by="openimages"` human boxes from the TRAIN split for bottles and shoes. Reject any
+    photo where `gold.is_gold` is true. Pick up to 20 per object, seeded; under 3 examples for an object, that object stays text-only
+    and the summary says so.
+  - Freeze it: save the three vectors with the list of example files, their hashes, `a` and the OWLv2 model name to Drive
+    `claudeknows_models/owl_queries.pt`; reuse it every run. Rebuild only while an object has fewer than 20 examples and new `alex`
+    boxes exist, and print "OWLv2 queries version N (keys: 7 examples)" in the loop summary, so a change of labeller is always
+    visible and never silent. Add the query version to 29f's cache key so the labeller check re-runs when the queries change.
+  - Flag `--owl-mode text|mix|examples` (default `text`) on `autobox` and in the loop notebook.
+- How to decide (report only, like 29f): score changes, so a fixed cut-off of 0.3 does not mean the same thing in each mode. Compare
+  modes by precision and recall at several cut-offs (0.15-0.6): for bottles and shoes on held-out Open Images VALIDATION photos with
+  human boxes (not gold); for keys only in the 29f gold table, where 29f simply gets one row per mode. The loop never switches mode
+  or cut-off by itself (that would tune on gold); if "mix" finds clearly more keys at similar precision, the summary says so as a
+  suggestion for Alex.
+- Tests (CPU, fake model objects returning fixed tensors): `a = 0` gives exactly today's boxes and scores; the example picker chooses
+  the patch whose box matches the given box, not the highest-scoring one; best IoU < 0.5 -> skipped; a gold photo is never used as
+  an example; fewer than 3 examples -> that object stays text-only; same inputs and seed -> same vectors; saved file reloads to
+  identical vectors and is not rebuilt when nothing new exists.
+- Why here: keys are the weakest object and OWLv2 decides which key boxes exist at all. Alex's "yes" answers are the only checked
+  key boxes in his rooms; today they only become training data for the detector. Feeding a few of them back to OWLv2 as examples
+  helps it on the next walk too, so each answer is worth more. It needs no training, no new model and costs nothing at run time.
+- Risks: examples taken only from review batches are "hard" cases (that is fine for a prototype), and a wrong "yes" from Alex would
+  pull the query toward the wrong thing (capped by averaging up to 20). Self-reinforcement is limited because only human-confirmed
+  boxes are used, never OWLv2's own boxes.
+- Licence: own code; OWLv2 weights and `transformers` Apache-2.0 as now. Expected gain: unknown for keys until 29f measures it; the
+  literature suggests a clear gain for classes that text describes badly (keys: "a bunch of keys" vs. a single car key on a table).
+
+### Considered but not recommended
+- **Text prompt ensembles only (several sentences per object, e.g. "a key", "a car key", "keys on a keyring", averaged):** OWL-ViT
+  averages 7 templates, but a 2026 aerial benchmark (arXiv 2601.22164) found synonym expansion and prefixes gave no meaningful gain;
+  examples carry information text cannot. Could be added as `PROMPTS` lists later at no cost if 29f shows text is the weak part.
+- **Fine-tuning OWLv2 on the confirmed boxes:** 100M+ parameters, few confirmed boxes, and it would make the two labellers less
+  independent; the query-only change keeps OWLv2 frozen.
+- **VisTex-OVLM (ICCV 2025; examples turned into text tokens):** stronger few-shot results, but needs training extra blocks and
+  was shown on GLIP / Grounding DINO, not OWLv2.
+- **Using OWLv2's own confident boxes as examples:** circular (it would confirm what it already sees); only human-checked boxes.
+- **New detectors / depth:** RF-DETR 1.12.0 (5 Nov 2026) adds export metadata only; nothing else new under Apache-2.0.
+
+### For Alex to decide
+- Not now, but later: when 29f and 29g have run, whether to switch OWLv2 from text-only to "text + examples" (the summary will
+  show the keys numbers side by side). Still open from earlier: RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small
+  (10-19), SAM 3 as an optional third labeller (11-07), fresh gold photos when the wear warning appears (11-13), a lower OWLv2 keys
+  cut-off if 29f suggests it (11-19).
+
+### Sources
+- OWL-ViT, Simple Open-Vocabulary Object Detection (ECCV 2022; one-shot image-conditioned 41.8 AP50 vs 26.0, 10 examples 46.8, example embeddings averaged): https://arxiv.org/pdf/2205.06230 , https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136700714.pdf
+- OWL-ViT prompt templates (7 CLIP prompts averaged per class): https://arxiv.org/pdf/2306.09683v3.pdf
+- Prova, Comprehensive Multi-Modal Prototypes (AAAI 2025; text + visual prototypes, +2.9 to +6.2 AP): https://arxiv.org/abs/2412.17800 , https://ojs.aaai.org/index.php/AAAI/article/view/32232
+- VisTex-OVLM, Visual Textualization for Image Prompted Object Detection (ICCV 2025): https://arxiv.org/html/2506.23785v1 , https://iccv.thecvf.com/virtual/2025/poster/1605
+- OWLv2 visual-prompt query selection demo (default HF choice often underperforms): https://vvmnnnkv-owlv2-visual-prompt.hf.space/
+- Open-vocabulary detectors on aerial images (prompt engineering gave no meaningful gain): https://arxiv.org/pdf/2601.22164
+- Eyewear auto-labelling with zero-shot detectors (prompt testing and threshold calibration needed): https://mdpi.com/2079-9292/13/23/4763
+- SAM 3 (ICLR 2026; OWLv2 as strongest open baseline): https://arxiv.org/pdf/2511.16719
+- `transformers` OWLv2 source (5.23.0; `class_predictor`, `box_predictor`, `embed_image_query` picks the highest-objectness box): https://github.com/huggingface/transformers/blob/main/src/transformers/models/owlv2/modeling_owlv2.py
+- RF-DETR changelog (1.12.0, 5 Nov 2026): https://rfdetr.roboflow.com/develop/changelog/
+
 ## 2026-11-19
 
 **Summary.** One pull request is open: #55 ("survive a broken resume file"). It was branched before #56 (the new gold-set notebook)
