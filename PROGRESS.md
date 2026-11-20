@@ -1,5 +1,47 @@
 # Progress log
 
+## 2026-11-20
+**This includes everything from PRs #55, #57 and #58.** Merging this one is enough; the others will close automatically.
+Everything the roadmap marks as done is already on `main` (checked).
+
+**Done** (roadmap task 29c, from research 2026-11-16): **one question per object, not one per photo.**
+- Before: if only one of the two labellers (say OWLv2) saw a key on the table, and the key was in 6 photos of the walk in
+  a row, you got 6 separate "Is this keys?" questions. They used up 6 of your 20 places per walk.
+- Now: questions about the same object in neighbouring photos are joined into one. Rule: same object, photos at most 2
+  apart in the walk, boxes overlapping (more than 30%), at most 8 photos per question (about 4 seconds of walking) so it
+  cannot slide onto a different object. You see one photo (the one where the labeller was surest) with its box, exactly
+  as before. "Yes" adds the box to every photo in the group (each photo gets its own box); "no" clears them all.
+- The limit of 20 now counts these grouped questions, so the same 20 answers can unlock several times more photos.
+  Each walk's log says how much it helped: "N per-frame questions grouped into M questions".
+- Spot checks of agreed labels (task 29) are never grouped.
+- Risk and guard: one wrong "yes" on a group adds up to 8 wrong boxes. Those boxes are marked `alex-track`, and the
+  drift report now shows the "no" rate of grouped questions on its own line, so we can see if they behave differently.
+- Code: `selflabel.link_tracks` (new), `label_walk`, `apply_answers`; `drift.answered` counts a grouped answer once.
+  8 new tests; 3 older tests now use a moving object so they still test one-question-per-photo cases. All 166 tests pass.
+- Older `review.json` files (from walks labelled before today) still work: a question without a group is treated as one
+  photo.
+
+**Next:** task 29d (keep the original training photos frozen in Drive and reuse them, so retrains are faster and
+fairer), then 29e, 29f, 29g.
+
+**Authorship check:** all commits on `main` and on this branch are by Claude or Alex (GitHub web merges as committer).
+
+**For Alex to decide:** nothing new. When you next run the learning-loop notebook, nothing changes for you except that
+there may be fewer questions. Still open from earlier research: fresh gold photos when the wear warning appears,
+RF-DETR / DEIMv2, Depth Anything V3 Small, SAM 3 as a third labeller.
+
+## 2026-11-19
+**Fix: a broken progress file no longer stops training, and a crash at the end no longer loses a run**
+- Alex's run on 11-18 stopped at the save step with "No such file: detector.pt". The real cause was earlier: training
+  crashed in its first seconds because `resume_detector.pt` in Drive was empty (left from an earlier cut-off run), and a
+  failed `!python` line does not stop Run all, so only the save step showed an error.
+- `train_detector` now moves an unreadable resume file aside to `resume_detector.pt.broken` and starts fresh.
+- The `train` command deletes the resume file only after `detector.pt` is saved (`keep_resume=True`), so a crash in the
+  cut-off step after training can be resumed instantly instead of retraining 60-90 minutes.
+- `spatial_colab.ipynb`: step 5 stops with a plain message if no model was made (and says whether Run all will continue
+  from saved progress); an older `detector.pt` is moved to `detector_previous.pt` first so it can't be mistaken for a new
+  one; step 8 runs from the repo folder and explains a missing model instead of a FileNotFoundError.
+
 ## 2026-11-18
 **This includes everything from PRs #42, #43, #45, #46, #47, #48, #49, #50, #51, #52 and #53.** Merging this one is enough;
 the others will close automatically. It also contains everything already on `main`. Note: tasks 26, 27 and 28 are marked
