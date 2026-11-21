@@ -3,6 +3,78 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-21
+
+**Summary.** Four pull requests are open: #59 (dev, task 29c), which already contains #55, #57 and #58, so I started from #59.
+Next to be coded are tasks 29d-29g. Today I went back to the one real problem from Alex's own runs: on 11-18 training crashed in its
+first seconds, yet the notebook carried on and only the *save* step complained ("No such file: detector.pt"). The dev fix (11-19)
+repaired the resume file and added a "does detector.pt exist?" check after training. I checked why this happened at all, in the
+source code of the tools: in Colab, a `!command` line that fails only stores its exit code in a hidden variable (`_exit_code`) and
+never raises an error (colabtools `_system_commands._system_compat`; same in IPython 9.8 `system_piped`), so "Run all" happily runs
+every later cell. The spatial notebook still has 10 such `!python -m claudeknows ...` steps without a check (download, import from
+Drive, OWLv2 auto-boxing and fill-in, contact sheets, summary, report, the composite A/B run, the distance check), the gold-set
+notebook 2 more (import, auto-boxing), plus `!pip install` and `!git` in all three notebooks. A failed fill-in or report step today goes unnoticed and later cells show results from stale or
+half-made files. **One roadmap change:** new task 29h, "every notebook step stops Run all with a plain message when it fails". It is
+not a model-training technique, but it protects every training run Alex starts and costs about an hour of dev time. Nothing new on
+models: no new Apache-2.0 detector or depth release found since 11-20 (Depth Anything 3 from Nov 2025 is still the newest; already
+discussed 10-19). The Colab free tier is unchanged in 2026 (Colab moved into Google AI plans on 22 Sep 2026, a paid perk only; free
+T4 still has no guarantee and a ~90-minute idle disconnect, which task 23n's resume already covers). rfdetr.roboflow.com was not
+reachable from this session.
+
+### Recommendations
+
+**1. Notebook steps that fail stop "Run all" (new task 29h; small effort, very low risk).**
+- What: one tiny helper, defined in the first code cell of `spatial_colab.ipynb`, `learning_loop.ipynb`, `gold_set.ipynb` (and
+  `try_spatial.ipynb` if it has `!` steps), used instead of bare `!` lines:
+  ```python
+  def step(cmd, what):
+      get_ipython().system(cmd)
+      code = get_ipython().user_ns.get("_exit_code", 0)
+      if code != 0:
+          raise SystemExit(f"Step '{what}' failed (exit code {code}), so the notebook stopped here. "
+                           "The lines just above say why. Fix or retry, then Runtime -> Run all again.")
+  ```
+  `get_ipython().system` is exactly what `!` calls, so output still streams live into the cell (progress bars too); the only change is
+  the check. Build `cmd` as a plain Python f-string with `shlex.quote()` around paths (e.g. `DRIVE_DIR`, `folder`, `out`) instead of
+  `$VAR` expansion, and keep `{` `}` out of the final string (Colab runs `var_expand` on it).
+- Where: every `!python -m claudeknows ...`, `!pip install ...`, `!git clone/fetch` line; inside the contact-sheet `for` loop too.
+  Leave purely informational lines (`!git log -1`, `!ffmpeg -version | head -1`) as `!`. Keep the existing "detector.pt missing"
+  message after training (it adds the resume hint); it now becomes a second safety net. For the optional composite A/B cell, a failure
+  should stop only that comparison, not lose the main model: it runs after `detector.pt` is saved to Drive, so stopping there is fine.
+- Tests (CPU, no Colab): a test reads every notebook JSON and fails if any code line starts with `!python`, `!pip` or `!git clone`/
+  `!git fetch` (allow-list `!git log`, `!ffmpeg -version`); a test executes the helper's source with a fake `get_ipython()` whose
+  `system()` sets `_exit_code` to 0 / 2 and checks that 0 passes and 2 raises `SystemExit` with the step name in the message.
+- Why here: Alex runs the notebooks with one "Run all" and is new to this; the only crash he has hit so far looked like a different
+  problem because of exactly this behaviour. Phase 2 makes it more important: the loop notebook will soon be the routine thing he
+  runs, and a silent failure there could, for example, leave old auto-labels in place while later cells report as if all is well.
+- Expected gain: no accuracy gain; it removes a whole class of confusing "it says done but nothing changed" runs and wasted GPU time.
+  Risk: very low (if a command that used to "fail harmlessly" now stops the notebook, that is a real bug surfacing). Licence: own
+  code; IPython (BSD-3) and colabtools (Apache-2.0) behaviour only.
+- Alternative considered: Colab's `%shell` line magic raises `CalledProcessError` on failure, but the message is a raw traceback and
+  it is Colab-only; `%%bash` (IPython raises by default) splits Python and shell into separate cells. The helper is clearer.
+
+### Considered but not recommended
+- **Running each step with `subprocess.run(..., check=True)`:** in a notebook, a child process's output is not shown in the cell unless
+  captured and re-printed line by line (progress bars break); `get_ipython().system` keeps Colab's live output.
+- **Switching notebooks to Python-function calls everywhere (no shell steps):** the learning-loop notebook already does this; for the
+  spatial notebook it is a bigger rewrite and loses the clean command-line logs. Not worth it now.
+- **Paid Colab (Google AI plans, Sep 2026) for steadier GPUs:** a cost decision, not needed; resume (23n) handles disconnects.
+- **New detectors / depth:** nothing new under Apache-2.0 found since 11-20; Depth Anything 3 (Nov 2025) still the newest.
+
+### For Alex to decide
+- Whether 29h should jump the queue and be done before 29d-29g: it is small and protects every run. By the rules it goes after the
+  current phase-2 tasks; tell the dev routine in "Notes from Alex" if you want it first. Still open from earlier: switching OWLv2 to
+  "text + examples" after 29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small (10-19), SAM 3 as a third labeller
+  (11-07), fresh gold photos when the wear warning appears (11-13).
+
+### Sources
+- Google colabtools, `_system_commands.py` (`!` stores `_exit_code`, never raises; `%shell` calls `check_returncode()`): https://github.com/googlecolab/colabtools/blob/main/google/colab/_system_commands.py
+- IPython 9.8.0 source (`interactiveshell.py` `system_piped`/`system_raw` set `_exit_code`; `magics/script.py` `%%bash` raises `CalledProcessError` unless `--no-raise-error`): https://github.com/ipython/ipython/blob/main/IPython/core/interactiveshell.py , https://github.com/ipython/ipython/blob/main/IPython/core/magics/script.py
+- IPython issue on inconsistent `_exit_code`: https://www.github.com/ipython/ipython/issues/9149
+- Colab moves into Google AI plans (22 Sep 2026): https://developers.googleblog.com/colab-is-now-part-of-your-google-ai-plan/
+- Colab FAQ (free-tier dynamic limits, no guaranteed GPU): https://research.google.com/colaboratory/intl/en-GB/faq.html
+- Depth Anything 3 (latest family release, Nov 2025): https://arxiv.org/abs/2511.10647v1
+
 ## 2026-11-20
 
 **Summary.** Two pull requests are open: #57 (research 11-19, which already includes `main` and the new gold-set notebook) and #55
