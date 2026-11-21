@@ -21,6 +21,11 @@ Rules, in order (RESEARCH.md 2026-10-21, 2026-11-05, 2026-11-06):
 5. Questions are sorted by how much the current detector disagrees with the
    proposed boxes (its box-head loss on them, highest first) and capped at 20.
    The number only orders the list; nothing is deleted because of it.
+5b. Ask once per object (task 29c, RESEARCH.md 2026-11-16): questions about the
+   same object in neighbouring frames (same label, at most 2 frames apart, box
+   IoU > 0.3 with the track's last box, at most 8 frames) become ONE question,
+   shown with its highest-scoring frame. "Yes" adds each frame's own box
+   (`by="alex-track"`); "no" clears all of them. The cap of 20 counts tracks.
 
 6. Spot checks (task 29, RESEARCH.md 2026-11-12): `AUDIT_PER_WALK` agreed, steady
    boxes are picked at random (seeded by the walk name) and mixed into the review
@@ -63,6 +68,9 @@ STEADY_NEIGHBOURS = 4  # look at the 4 nearest frames ...
 STEADY_MIN = 2  # ... and want the object in at least 2 of them
 STEADY_REVIEW = 0.6  # an unsteady agreed box is asked about only if both scores reach this
 MAX_QUESTIONS = 20
+TRACK_GAP = 2  # frames at most this many positions apart can be one track (task 29c)
+TRACK_MAX = 8  # at most this many frames per track (~4 s of walk)
+TRACK = "alex-track"  # `by` of a box from a "yes" to a question about several frames
 MAX_SELF_SHARE = 0.3
 LOW_SCORE = 0.05  # detector boxes below this are not even looked at
 LABELS_FILE = "selflabels.json"
@@ -202,7 +210,7 @@ def label_walk(walk_dir, det, owl, det_cut, owl_cut=OWL_THRESHOLD, loss_fn=None,
             per_object.setdefault(b["label"], {"agreed": 0, "detector_only": 0, "owlv2_only": 0})
             per_object[b["label"]][f"{b['seen_by']}_only"] += 1
 
-    labels, questions = {}, []
+    labels, questions, per_frame_q = {}, [], []
     stats = {"frames": len(frames), "agreed": 0, "unsteady_dropped": 0, "unsteady_asked": 0,
              "single_asked": 0, "questions_over_cap": 0}
     for p, (agreed, single), ok in zip(frames, per_frame, flags):
@@ -228,11 +236,24 @@ def label_walk(walk_dir, det, owl, det_cut, owl_cut=OWL_THRESHOLD, loss_fn=None,
             if q["why"] == "dropped":
                 entry["open"].append(None)  # marker: never asked, frame stays held back
                 continue
-            qid = f"{walk_dir.name}:{len(questions)}"
-            entry["open"].append(qid)
-            questions.append({"id": qid, "frame": p.name, "label": q["label"], "box": _round(q["box"]),
-                              "score": round(q["score"], 3), "why": q["why"]})
+            per_frame_q.append({"pos": len(labels), "frame": p.name, "label": q["label"],
+                                "box": _round(q["box"]), "score": round(q["score"], 3), "why": q["why"]})
         labels[p.name] = entry
+
+    # one question per object track, not per frame (task 29c, RESEARCH.md 2026-11-16)
+    for k, members in enumerate(link_tracks(per_frame_q)):
+        qid = f"{walk_dir.name}:{k}"
+        top = max(members, key=lambda m: (m["score"], -m["pos"]))
+        for m in members:
+            labels[m["frame"]]["open"].append(qid)
+        questions.append({"id": qid, "frame": top["frame"], "label": top["label"], "box": top["box"],
+                          "score": top["score"], "why": top["why"],
+                          "members": [{"frame": m["frame"], "box": m["box"], "score": m["score"]}
+                                      for m in members]})
+    stats["frame_questions"] = len(per_frame_q)
+    stats["grouped_questions"] = len(questions)
+    if per_frame_q:
+        log(f"{walk_dir.name}: {len(per_frame_q)} per-frame questions grouped into {len(questions)} questions")
 
     # spot checks: a seeded random pick of accepted boxes, the same on every rerun
     pool = [(name, i) for name, e in sorted(labels.items()) for i in range(len(e["boxes"]))]
@@ -246,10 +267,13 @@ def label_walk(walk_dir, det, owl, det_cut, owl_cut=OWL_THRESHOLD, loss_fn=None,
         audits.append({"id": qid, "frame": name, "label": b["label"], "box": b["box"],
                        "score": b["score"], "why": AUDIT})
 
-    if loss_fn is not None:
+    if loss_fn is not None:  # a track is as suspicious as its most suspicious member
         for q in questions:
-            with Image.open(walk_dir / q["frame"]) as im:
-                q["disagreement"] = round(loss_fn(im.convert("RGB"), [q]), 4)
+            worst = 0.0
+            for m in q["members"]:
+                with Image.open(walk_dir / m["frame"]) as im:
+                    worst = max(worst, loss_fn(im.convert("RGB"), [{"label": q["label"], "box": m["box"]}]))
+            q["disagreement"] = round(worst, 4)
         questions.sort(key=lambda q: -q["disagreement"])
     room = max_questions - len(audits)
     stats["questions_over_cap"] = max(0, len(questions) - room)
@@ -271,6 +295,40 @@ def label_walk(walk_dir, det, owl, det_cut, owl_cut=OWL_THRESHOLD, loss_fn=None,
         + (f", {len(audits)} of them spot checks" if audits else "")
         + f"); frames: {stats[TRAIN]} for training, {stats[HELD]} held back, {stats[EMPTY]} empty")
     return stats
+
+
+def link_tracks(cands, gap=TRACK_GAP, iou_thresh=STEADY_IOU, max_len=TRACK_MAX):
+    """Group per-frame questions about the same object into tracks (task 29c).
+
+    cands: [{"pos" (frame position in walk order), "label", "box", "score", ...}].
+    A question joins a track with the same label whose last member is at most `gap`
+    frame positions before it and whose last box overlaps it (IoU > `iou_thresh`).
+    A track holds at most one box per frame (best IoU wins) and at most `max_len`
+    frames, so it cannot drift onto a different object. Returns a list of tracks
+    (lists of the given dicts), in order of their first frame."""
+    tracks, active = [], []
+    by_pos = {}
+    for c in cands:
+        by_pos.setdefault(c["pos"], []).append(c)
+    for pos in sorted(by_pos):
+        here = by_pos[pos]
+        active = [t for t in active if pos - t[-1]["pos"] <= gap and len(t) < max_len]
+        pairs = sorted(((iou(t[-1]["box"], c["box"]), -ti, -ci) for ti, t in enumerate(active)
+                        for ci, c in enumerate(here) if c["label"] == t[-1]["label"]), reverse=True)
+        used_t, used_c = set(), set()
+        for v, nti, nci in pairs:
+            ti, ci = -nti, -nci
+            if v <= iou_thresh or ti in used_t or ci in used_c:
+                continue
+            used_t.add(ti)
+            used_c.add(ci)
+            active[ti].append(here[ci])
+        for ci, c in enumerate(here):
+            if ci not in used_c:
+                t = [c]
+                tracks.append(t)
+                active.append(t)
+    return tracks
 
 
 def _status(entry):
@@ -329,13 +387,20 @@ def apply_answers(walk_dir, answers, log=print):
                 entry["boxes"] = [b for b in entry["boxes"]
                                   if not (b["label"] == q["label"] and list(b["box"]) == list(q["box"]))]
             continue
-        if qid not in entry["open"]:
-            continue
-        entry["open"].remove(qid)
-        entry["answered"].append({"id": qid, "yes": bool(yes), "label": q["label"]})
-        if yes:
-            entry["boxes"].append({"label": q["label"], "box": q["box"], "score": q["score"],
-                                   "by": "alex"})
+        members = q.get("members") or [{"frame": q["frame"], "box": q["box"], "score": q["score"]}]
+        by = TRACK if len(members) > 1 else "alex"
+        for m in members:  # a track's answer counts for every frame in it
+            entry = labels.get(m["frame"])
+            if entry is None or qid not in entry["open"]:
+                continue
+            entry["open"].remove(qid)
+            rec = {"id": qid, "yes": bool(yes), "label": q["label"]}
+            if len(members) > 1:
+                rec["track"] = True
+            entry["answered"].append(rec)
+            if yes:
+                entry["boxes"].append({"label": q["label"], "box": m["box"], "score": m["score"],
+                                       "by": by})
     for entry in labels.values():
         entry["status"] = _status(entry)
     (walk_dir / LABELS_FILE).write_text(json.dumps(labels, indent=0, sort_keys=True))

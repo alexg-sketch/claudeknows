@@ -3,16 +3,22 @@ from datetime import date
 
 from claudeknows import loop
 from claudeknows import selflabel as sl
-from tests.test_selflabel import BOTTLE, SHOE, cut, make_walk, scripted
+from tests.test_selflabel import BOTTLE, cut, make_walk, scripted
 
 QUIET = lambda *_: None  # noqa: E731
 
 
+def _moving(i):
+    x, y = (i % 9) * 0.1, 0.55 + (i // 9 % 4) * 0.1
+    return (x, y, x + 0.08, y + 0.08)
+
+
 def _label_fn(n, shoe_frames, audits=0):
     """Fake labellers: a steady bottle both see in every frame; a shoe only OWLv2 sees
-    in `shoe_frames` (so those frames become questions and are held back)."""
+    in `shoe_frames` (so those frames become questions and are held back). The shoe moves
+    between frames, so each frame is its own question (no grouping into tracks, task 29c)."""
     det = [[{"label": "water_bottle", "score": 0.9, "box": BOTTLE}] for _ in range(n)]
-    owl = [[("water_bottle", 0.8, BOTTLE)] + ([("shoes", 0.7, SHOE)] if i in shoe_frames else [])
+    owl = [[("water_bottle", 0.8, BOTTLE)] + ([("shoes", 0.7, _moving(i))] if i in shoe_frames else [])
            for i in range(n)]
     return lambda d: sl.label_walk(d, scripted(det), scripted(owl), cut, 0.3, audit_per_walk=audits,
                                    log=QUIET)
