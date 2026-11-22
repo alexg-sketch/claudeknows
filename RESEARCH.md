@@ -3,6 +3,86 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-22
+
+**Summary.** Five pull requests are open; the newest, #60 (research 11-21), already contains #59, #58, #57 and #55, so I started
+from it. Searches for new models turned up nothing that changes the plan (no new Apache-2.0 detector or Depth Anything release
+since 11-21; RF-DETR Nano-Large is still the open option, YOLO26 is still AGPL). So today I read the code that turns Alex's walk
+videos into training photos, and found a real gap: **walk frames are saved at only 256 px on the long side**, while every other
+detector photo (Open Images, Alex's own footage) is kept at 960 px. `loop.run_loop` calls `walks.import_walks` with its default
+`max_side=frames.MAX_SIDE` = 256, the old size from the classifier days (task 14). Those small frames are then labelled by OWLv2
+(which works on a 960x960 input, so they are blown up about 3.75x) and by the detector (640x960), and the agreed boxes are mixed into
+retraining as up to 30% of the data. A key 2 m away that is 30 px wide in the real video is about 8 px wide in a 256 px frame: OWLv2
+and the detector will mostly miss it, and keys are already the weakest object. Second, the blur filter uses one fixed number
+(`BLUR_THRESHOLD = 60`) but its score depends strongly on the saved size: on a test texture I measured the same mild blur scoring 38
+at 960 px but 1,425 at 256 px, so own-footage frames (960 px) are filtered very strictly and walk frames (256 px) hardly at all.
+**One roadmap change:** new task 29i, "walk frames at detection size, blur check that means the same at any size, and the sharpest
+frame in each half-second". As far as PROGRESS.md shows, no real walk has been processed yet, so fixing this before the first walk
+means no old frames need redoing.
+
+### Recommendations
+
+**1. Walk frames at detection size + size-independent blur check + sharpest frame per window (new task 29i; small effort, low risk).**
+- What, part 1 (size): import walks at `DETECT_SIDE` (960) like all other detection photos. Move the constant into `frames.py` and
+  re-export it from `detection_data.py` (avoids a circular import); `import_walks(..., max_side=DETECT_SIDE)`; `walks` CLI gets
+  `--max-side`. Never upscale a smaller video (today's `shrink` already does this).
+- Part 2 (blur check): `blur_score` scores a copy shrunk to `BLUR_SIDE = 256` (`cv2.INTER_AREA`), whatever size the frame is saved
+  at, so `BLUR_THRESHOLD = 60` keeps the meaning it was tuned for in task 14. Measured here (OpenCV 5.1, a smoothed-noise texture,
+  Gaussian blur sigma in 960-px pixels): sharp 813 at 960 vs 4,232 at 256; sigma 1.5: 38 vs 1,425; sigma 3: 3.8 vs 233. The
+  variance of the Laplacian measures fine detail per pixel, and shrinking packs more detail into each pixel. PyImageSearch and a
+  3-D scene-graph paper both note the threshold is scene- and setup-dependent; scoring at one fixed size removes the size part.
+  Side effect: own footage (stored at 960) will be judged less strictly than today; part 3 keeps it sharp.
+- Part 3 (sharpest frame per window): decode at 3x the wanted rate (ffmpeg `fps=6`, OpenCV step / 3) and keep the frame with the best
+  `blur_score` in each group of 3 consecutive frames (one per 0.5 s at 2 fps), then apply the threshold. Same number of frames, far
+  fewer blurry ones: a walking phone produces bursts of motion blur that last a fraction of a second, so a neighbour 1/6 s away is
+  often sharp. This is what photogrammetry / 3-D capture tools do (cansik `sharp-frame-extractor`: sharpest frame per time window;
+  `sharp-frames-python` "batched" mode). `extract_frames(..., best_of=3)`; `best_of=1` = today's sampling. Applies to walks and to
+  Alex's own footage (`import_own`). Decoding 3x more frames costs a few extra seconds per minute of video.
+- Older walks: if any walk was imported before the fix, leave its frames alone (labels and Alex's answers point to those files) and
+  say once in the summary "walk X: frames stored at 256 px (imported before 2026-11-22)", found from the first frame's size.
+- Tests (CPU, tiny OpenCV-made videos): walk frames have long side 960 for a bigger video and are not upscaled for a smaller one;
+  `blur_score(img)` and `blur_score(shrink(img, 256))` agree within 10%; a video where every 3rd frame is sharp and the others
+  blurred keeps only sharp frames with `best_of=3`, with the same frame count as `best_of=1`; `best_of=1` gives today's frames; the
+  manifest still processes each walk once.
+- Why here: phase 2's whole point is learning from walks. With 256 px frames the walk data is the lowest-quality part of every
+  retrain, it is least useful for exactly the small, far objects (keys) that walks are meant to teach, and Alex's yes/no view (480 px)
+  shows him a blown-up 256 px photo, which makes his answers harder too. Small-object detection depends heavily on pixels on the
+  object (the SAHI paper in our 10-22 sources, and our own tiles/zoom work 23g/23j, exist for this reason); keeping 4x fewer pixels
+  in the frames throws that away before any model sees them.
+- Expected gain: not measurable until real walks exist, but it removes a 3.75x resolution gap between walk frames and everything
+  else, for both labellers and for training. Risk: low. Drive space: ~150-250 KB per frame instead of ~20 KB, so ~40-60 MB per
+  walk of ~240 frames; fine on a free 15 GB Drive for many walks. Licence: own code; OpenCV (Apache-2.0), ffmpeg already used.
+
+### Considered but not recommended
+- **Adaptive blur threshold (moving average of scores, as in the 3-D scene-graph paper):** handles plain walls that look "blurry",
+  but part 3 already keeps the best frame nearby; add only if walk summaries show many frames dropped as blurry.
+- **Storing walk frames at full phone resolution (1080-4K):** the detector trains at 640x960 and OWLv2 at 960; bigger files would
+  only cost Drive space (960 px is also enough for the 1.7x tiles of 23g).
+- **DepthART (~6M-parameter Depth Anything variant, ACM MM 2026):** interesting for a robot later, but no official weights or licence
+  found; V2 Small stays.
+- **SAS-Det / DAT self-training for open-vocabulary detectors (2023, May 2026):** they fine-tune the open-vocabulary model itself; we
+  deliberately keep OWLv2 fixed as an independent labeller.
+- **New detectors:** nothing new under Apache-2.0; torchvision 0.29.x (Oct 2026) shows no detection-model changes found.
+
+### For Alex to decide
+- Whether 29i should be done **before your first real walk** (and so before 29d-29h). It is small, and every walk imported before it
+  keeps its 256 px frames for good (each walk is imported only once). If you want that, add a line to "Notes from Alex", e.g.
+  "do 29i first". By the rules I placed it after 29h. Still open from earlier: 29h first (11-21), OWLv2 "text + examples" after
+  29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small (10-19), SAM 3 as a third labeller (11-07).
+
+### Sources
+- Repo code: `claudeknows/loop.py` (`run_loop` -> `import_walks(walks_src, frames_dir)`), `walks.py` (`max_side=MAX_SIDE`),
+  `frames.py` (`MAX_SIDE = 256`, `BLUR_THRESHOLD = 60`), `detection_data.py` (`DETECT_SIDE = 960`).
+- OWLv2 preprocessor (960x960 input): https://huggingface.co/google/owlv2-base-patch16/blob/main/preprocessor_config.json
+- Blur detection with OpenCV, threshold is domain dependent: https://pyimagesearch.com/2015/09/07/blur-detection-with-opencv/
+- 3-D Scene Graph (fixed Laplacian threshold flags low-texture frames; adaptive threshold): https://arxiv.org/pdf/1908.04929
+- sharp-frame-extractor (sharpest frame per time window): https://awesome.ecosyste.ms/projects/github.com%2Fcansik%2Fsharp-frame-extractor
+- sharp-frames-python (batched sharpest-frame selection): https://github.com/reflct/sharp-frames-python
+- Filtering video frames by sharpness for photogrammetry: https://ryanfb.github.io/etc/2015/01/22/filtering_video_frames_by_sharpness_for_photogrammetry.html
+- RF-DETR licences (Nano-Large Apache-2.0): https://raw.githubusercontent.com/roboflow/rf-detr/HEAD/README.md
+- DepthART write-up (ACM MM 2026): https://finance.sina.cn/stock/jdts/2026-10-07/detail-iniuksym4764240.d.html
+- Taming Self-Training for Open-Vocabulary Detection (SAS-Det): https://arxiv.org/html/2308.06412v3 ; DAT: https://arxiv.org/pdf/2605.03642
+
 ## 2026-11-21
 
 **Summary.** Four pull requests are open: #59 (dev, task 29c), which already contains #55, #57 and #58, so I started from #59.
