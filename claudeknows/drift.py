@@ -81,13 +81,21 @@ def wilson(k, n, z=1.96):
 
 
 def answered(walks_root):
-    """Every yes/no answer so far: [{"walk", "frame", "object", "yes", "audit"}]."""
+    """Every yes/no answer so far, one row per question: [{"walk", "frame", "object", "yes",
+    "audit", "track"}]. A track question (task 29c) is saved in each of its frames but
+    counted once."""
     rows = []
     for d in walk_dirs(walks_root):
+        seen = set()
         for frame, e in sorted(load_labels(d).items()):
             for a in e.get("answered", []):
+                if a.get("id") is not None:
+                    if a["id"] in seen:
+                        continue
+                    seen.add(a["id"])
                 rows.append({"walk": d.name, "frame": frame, "object": a.get("label"),
-                             "yes": bool(a["yes"]), "audit": bool(a.get("audit"))})
+                             "yes": bool(a["yes"]), "audit": bool(a.get("audit")),
+                             "track": bool(a.get("track"))})
     return rows
 
 
@@ -125,8 +133,14 @@ def review_no_line(rows):
     if not rs:
         return "review questions: none answered yet"
     no = sum(not r["yes"] for r in rs)
-    return (f"review questions (the uncertain boxes): {no} of {len(rs)} answered 'no' "
+    line = (f"review questions (the uncertain boxes): {no} of {len(rs)} answered 'no' "
             f"({_pct(no / len(rs))})")
+    tr = [r for r in rs if r.get("track")]
+    if tr:  # one wrong "yes" here adds several boxes, so watch it on its own
+        tno = sum(not r["yes"] for r in tr)
+        line += (f"; questions covering several frames: {tno} of {len(tr)} 'no' "
+                 f"({_pct(tno / len(tr))})")
+    return line
 
 
 # ------------------------------------------------------------------ agreement rate

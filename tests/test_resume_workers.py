@@ -41,6 +41,31 @@ def test_resume_gives_same_weights_as_unbroken_run(tmp_path):
     assert not (tmp_path / "resume.pt").exists()  # removed after a normal finish
 
 
+def test_keep_resume_survives_a_crash_after_training(tmp_path):
+    """The CLI deletes the resume file only after saving, so a crash between loses nothing."""
+    samples = _samples(tmp_path)
+    path = str(tmp_path / "resume.pt")
+    first, _ = detector.train_detector(samples, epochs=2, resume_path=path, keep_resume=True,
+                                       log=lambda *_: None, **KW)
+    assert (tmp_path / "resume.pt").exists()
+    msgs = []  # e.g. the cut-off step crashed: the rerun picks the finished model straight back up
+    again, hist = detector.train_detector(samples, epochs=2, resume_path=path, log=msgs.append, **KW)
+    assert any("2 of 2" in m for m in msgs) and len(hist) == 2
+    assert _gap(first, again) < 1e-6
+
+
+@pytest.mark.parametrize("content", [b"", b"PK\x03\x04 cut off"])
+def test_broken_resume_file_is_set_aside_and_training_starts_fresh(tmp_path, content):
+    samples = _samples(tmp_path)
+    path = tmp_path / "resume.pt"
+    path.write_bytes(content)  # what Drive left after an interrupted save
+    msgs = []
+    _, hist = detector.train_detector(samples, epochs=1, resume_path=str(path), log=msgs.append, **KW)
+    assert any("could not be read" in m for m in msgs)
+    assert len(hist) == 1
+    assert (tmp_path / "resume.pt.broken").read_bytes() == content
+
+
 def test_resume_with_different_settings_starts_fresh(tmp_path):
     samples = _samples(tmp_path)
     path = str(tmp_path / "resume.pt")
