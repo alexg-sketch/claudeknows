@@ -109,7 +109,7 @@ def test_unsteady_low_score_dropped_and_frame_held(tmp_path):
 def test_questions_sorted_by_disagreement_and_capped(tmp_path):
     d = make_walk(tmp_path, n=4)
     det = [[] for _ in range(4)]
-    owl = [[("keys", 0.9, (0.1 * i, 0.1, 0.1 * i + 0.2, 0.3))] for i in range(4)]
+    owl = [[("keys", 0.9, (0.1 * i, 0.1, 0.1 * i + 0.08, 0.3))] for i in range(4)]  # no overlap: 4 tracks
     loss = {0: 0.1, 1: 0.9, 2: 0.5, 3: 0.3}
 
     def loss_fn(_im, boxes):
@@ -198,3 +198,99 @@ def test_cli_questions_and_answer(tmp_path, capsys):
     assert sl.load_labels(d)["f001.jpg"]["status"] == sl.TRAIN
     sl.main(["questions", str(tmp_path)])
     assert "walk1:0" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- task 29c: one question per track
+
+KEY = (0.1, 0.6, 0.25, 0.75)
+
+
+def _key(i, shift=0.005):
+    x = KEY[0] + i * shift
+    return (x, KEY[1], x + KEY[2] - KEY[0], KEY[3])
+
+
+def _cands(positions, label="keys", box=lambda i: _key(i)):
+    return [{"pos": i, "label": label, "box": box(i), "score": 0.5} for i in positions]
+
+
+def test_owl_only_key_in_six_frames_is_one_question(tmp_path):
+    d = make_walk(tmp_path, n=6)
+    owl = [[("keys", 0.4 + 0.01 * i, _key(i))] for i in range(6)]
+    logs = []
+    stats = sl.label_walk(d, scripted([[]] * 6), scripted(owl), cut, 0.3, audit_per_walk=0,
+                          log=logs.append)
+    qs = sl.load_questions(d)
+    assert len(qs) == 1 and len(qs[0]["members"]) == 6
+    assert qs[0]["frame"] == "f005.jpg"  # the highest-scoring member is shown
+    assert stats["frame_questions"] == 6 and stats["grouped_questions"] == 1
+    assert any("6 per-frame questions grouped into 1 questions" in l for l in logs)
+    assert all(e["status"] == sl.HELD for e in sl.load_labels(d).values())
+    sl.apply_answers(d, {qs[0]["id"]: True}, log=lambda *_: None)
+    labels = sl.load_labels(d)
+    for i in range(6):
+        e = labels[f"f{i:03d}.jpg"]
+        assert e["status"] == sl.TRAIN
+        assert [b["by"] for b in e["boxes"]] == [sl.TRACK]
+        assert e["boxes"][0]["box"] == [round(v, 4) for v in _key(i)]  # its own box
+    assert len(sl.self_samples(tmp_path)) == 6
+
+
+def test_track_no_adds_no_box(tmp_path):
+    d = make_walk(tmp_path, n=4)
+    owl = [[("keys", 0.5, _key(i))] for i in range(4)]
+    sl.label_walk(d, scripted([[]] * 4), scripted(owl), cut, 0.3, audit_per_walk=0,
+                  log=lambda *_: None)
+    (q,) = sl.load_questions(d)
+    sl.apply_answers(d, {q["id"]: False}, log=lambda *_: None)
+    labels = sl.load_labels(d)
+    assert all(e["boxes"] == [] and e["open"] == [] for e in labels.values())
+    assert all(e["status"] == sl.EMPTY for e in labels.values())
+
+
+def test_two_objects_in_same_frames_two_questions():
+    cands = _cands(range(4)) + _cands(range(4), label="shoes", box=lambda i: SHOE)
+    tracks = sl.link_tracks(cands)
+    assert sorted((t[0]["label"], len(t)) for t in tracks) == [("keys", 4), ("shoes", 4)]
+
+
+def test_same_label_far_apart_in_frame_two_tracks():
+    far = (0.7, 0.1, 0.85, 0.25)
+    cands = _cands(range(3)) + _cands(range(3), box=lambda i: far)
+    assert sorted(len(t) for t in sl.link_tracks(cands)) == [3, 3]
+
+
+def test_gap_starts_new_track():
+    assert [len(t) for t in sl.link_tracks(_cands([0, 1, 2, 4]))] == [4]  # 2 apart: same track
+    assert [len(t) for t in sl.link_tracks(_cands([0, 1, 2, 5, 6]))] == [3, 2]  # 3 apart: new
+
+
+def test_ten_frames_split_eight_plus_two():
+    tracks = sl.link_tracks(_cands(range(10), box=lambda i: KEY))
+    assert [len(t) for t in tracks] == [8, 2]
+
+
+def test_cap_counts_tracks_and_audits_not_grouped(tmp_path):
+    d = make_walk(tmp_path, n=6)
+    bottle_d = {"label": "water_bottle", "score": 0.9, "box": BOTTLE}
+    owl = [[("water_bottle", 0.8, BOTTLE), ("keys", 0.5, _key(i))] for i in range(6)]
+    stats = sl.label_walk(d, scripted([[bottle_d]] * 6), scripted(owl), cut, 0.3,
+                          audit_per_walk=2, max_questions=3, log=lambda *_: None)
+    qs = sl.load_questions(d)
+    audits = [q for q in qs if q["why"] == sl.AUDIT]
+    assert len(audits) == 2 and all("members" not in q for q in audits)
+    assert len(qs) == 3 and stats["questions_over_cap"] == 0
+
+
+def test_drift_counts_track_answer_once(tmp_path):
+    from claudeknows import drift
+    d = make_walk(tmp_path, n=5)
+    owl = [[("keys", 0.5, _key(i))] for i in range(5)]
+    sl.label_walk(d, scripted([[]] * 5), scripted(owl), cut, 0.3, audit_per_walk=0,
+                  log=lambda *_: None)
+    (q,) = sl.load_questions(d)
+    sl.apply_answers(d, {q["id"]: False}, log=lambda *_: None)
+    rows = drift.answered(tmp_path)
+    assert len(rows) == 1 and rows[0]["track"]
+    line = drift.review_no_line(rows)
+    assert "1 of 1 answered 'no'" in line and "several frames: 1 of 1" in line
