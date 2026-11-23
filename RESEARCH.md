@@ -3,6 +3,70 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-23
+
+**Summary.** Six pull requests are open; the newest, #61 (research 11-22), already contains #60, #59, #58, #57 and #55, so I
+started from it. Six research tasks (29d-29i) are now waiting for the dev routine, so today I deliberately added **no new task**
+and instead checked that the waiting ones still fit together and still match the newest libraries. Library check: torch 2.15.0 /
+torchvision 0.29.2 (28 Oct), transformers 5.24.0 (21 Nov), rfdetr 1.12.1 (12 Nov, package Apache-2.0), ensemble-boxes 1.0.11,
+opencv-python-headless 5.1.0.95. In the transformers 5.24.0 OWLv2 code, `class_predictor(image_feats, query_embeds, query_mask)` and
+the outputs `class_embeds`, `pred_boxes`, `image_embeds` are unchanged, so task 29g's plan still works as written (the notebooks
+install transformers unpinned, so this matters); `post_process_grounded_object_detection` is still the name `autobox.post_process`
+looks for first. No new Apache-2.0 detector and no new Depth Anything release found (Depth Anything 3, Nov 2025, is still the newest;
+its large models are CC BY-NC). One real gap found between two waiting tasks: **29d** (save the original training photos once in
+Drive and reuse them) decides "reuse or rebuild" from the file list of Alex's footage and a few settings, but not from *how* frames
+and boxes are made. **29i** (and 29g) change exactly that. If 29d is built first (it is earlier in the list), the snapshot made before
+29i would keep being reused, so 29i's sharper own-footage frames would never reach training, with no message. **Two small
+refinements** (to 29d and 29i), no new tasks.
+
+### Recommendations
+
+**1. Snapshot "recipe" check covers how photos are made (refines 29d and 29i; tiny effort, removes a silent failure).**
+- What: in 29d's `manifest.json` `settings`, also record the frame-extraction settings (`fps`, `DETECT_SIDE`, `BLUR_THRESHOLD`; later
+  `BLUR_SIDE`, `best_of` from 29i), the OWLv2 model name (later `--owl-mode` / queries version from 29g), and a hand-bumped constant
+  `PHOTO_PIPELINE_VERSION = 1` in `loop.py`. Compare key by key; a key missing from an older manifest counts as changed, so old
+  snapshots rebuild once. The summary names the changed keys. 29i gets a step (5): bump the version and add its two settings, so the
+  first run after 29i rebuilds the snapshot.
+- Why a hand-bumped version as well as settings: settings catch the knobs we know about; a version number catches code changes that
+  have no knob (e.g. a fix to how a video is decoded). It is the same idea as a cache key in build tools and data-versioning tools
+  (DVC re-runs a stage when its parameters or code dependencies change). Hashing the source files of `frames.py`/`autobox.py` would
+  also work but rebuilds after harmless edits (comments, tests), and each rebuild costs a long Colab step (re-downloads, OWLv2 twice).
+- Why here: 29d's purpose is that every retrain sees the *same* original photos; 29i's purpose is *better* own-footage frames. Without
+  this, whichever is coded second partly cancels the other, and nothing would say so. The snapshot id already feeds `retrain.recipe_of`,
+  so a rebuild also re-measures the noise floor through the existing path (correct: the training photos really changed).
+- Expected gain: no accuracy change by itself; it makes sure 29i (and 29g if Alex turns it on) actually reach training. Effort: about
+  20 lines + 3 tests. Risk: very low (worst case one extra rebuild). Licence: own code, standard library.
+
+### Considered but not recommended
+- **New tasks today:** six research tasks are already queued (29d-29i); adding more would only lengthen the queue. Better to let the dev
+  routine catch up and let real walk results show where the next gain is.
+- **Pinning `transformers` in the notebooks:** OWLv2 parts we use are unchanged in 5.24.0 and `autobox.post_process` already handles
+  the v5 rename; pinning would also freeze security/bug fixes. Revisit only if a future release breaks the tests or a Colab run.
+- **RF-DETR 1.12 / YOLO26 / announced YOLO27:** RF-DETR Nano-Large stays the Apache-2.0 option (the biggest variant has a different
+  licence); YOLO26 is AGPL-3.0; YOLO27 is waitlist-only with no licence stated. No reason to change Alex's Faster R-CNN choice.
+- **Self-training papers (2026 IEEE T-IV "self-training with accurate labelling and class balancing"; "Look Around and Learn",
+  consensus over views):** their key ideas (repeated rounds, class balancing, agreement across views) are already in tasks 26, 29b,
+  29c; nothing new to add.
+- **Roboflow100-VL (NeurIPS 2025) few-shot benchmark:** confirms that open-vocabulary detectors need a few real examples for unusual
+  objects (supports 29g), but adds no new technique for us.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: do 29i before your first real walk (11-22), 29h first (11-21), OWLv2 "text + examples" after
+  29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small (10-19), SAM 3 as a third labeller (11-07).
+
+### Sources
+- Repo code: `claudeknows/loop.py` (`prepare_training_photos`), `frames.py` (`extract_frames`, `MAX_SIDE`, `BLUR_THRESHOLD`),
+  `autobox.py` (`post_process`), ROADMAP tasks 29d, 29g, 29i.
+- transformers 5.24.0 on PyPI (OWLv2 `modeling_owlv2.py`, `processing_owlv2.py` read from the wheel): https://pypi.org/project/transformers/5.24.0/
+- torchvision 0.29.2: https://pypi.org/project/torchvision/ ; rfdetr 1.12.1: https://pypi.org/project/rfdetr/
+- DVC: stages re-run when params or dependencies change: https://dvc.org/doc/user-guide/pipelines/defining-pipelines
+- Depth Anything 3 README (latest release, Nov 2025; model licences): https://raw.githubusercontent.com/ByteDance-Seed/Depth-Anything-3/main/README.md
+- YOLO26 (AGPL-3.0): https://learnopencv.com/yolov26-real-time-deployment/ ; Ultralytics roadmap (YOLO27): https://www.ultralytics.com/roadmap
+- RF-DETR variant licences (HN, Roboflow co-founder): https://hn-clone-remix.netlify.app/item/48639165
+- Self-training with accurate labelling and class balancing (IEEE T-IV, Jan 2026): https://trid.trb.org/View/2685920
+- Look Around and Learn: https://arxiv.org/pdf/2302.03566
+- Roboflow100-VL: https://arxiv.org/abs/2505.20612
+
 ## 2026-11-22
 
 **Summary.** Five pull requests are open; the newest, #60 (research 11-21), already contains #59, #58, #57 and #55, so I started
