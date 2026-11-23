@@ -1,5 +1,48 @@
 # Progress log
 
+## 2026-11-23
+**This includes everything from PRs #55, #57, #58, #59, #60, #61 and #62.** Merging this one is enough; the others will
+close automatically. (#62, the newest research PR, already contained all the others, so today's branch started from it.)
+`main` already contains everything the roadmap marked as done before today.
+
+**Done: task 29d — the original training photos are saved once in Drive and reused** (with the 11-23 research refinement)
+- Before: every time the learning loop retrained, Colab rebuilt the ~1,000 original training photos from scratch: streamed
+  ~5 GB of Open Images files, downloaded the photos again (a timeout quietly swapped in a different photo) and ran OWLv2
+  twice. Slow, and each retrain learned from a slightly different "original" set.
+- Now: the first retrain builds them as before and then saves them in Drive `claudeknows_models/training_set/` as ONE file
+  (`training_set.tar`, roughly 0.2-0.4 GB) plus `manifest.json` (every file with a checksum, counts per object and source,
+  date, code version, and the settings used). Later retrains copy that one file to Colab's disk, check every checksum and
+  skip downloading and OWLv2 completely.
+- It is rebuilt automatically, with the reason in the loop summary, when:
+  - your own photos/videos in `claudeknows_photos/` change (new, removed or changed files; `walks/` does not count),
+    e.g. "training photos rebuilt: your own photos/videos changed (1 new, e.g. keys/b.MOV)";
+  - any setting for how photos, frames or boxes are made changes (number of photos, frames per second, photo size, blur
+    limit, OWLv2 model and thresholds, or `PHOTO_PIPELINE_VERSION`, a number the code bumps when it changes how photos
+    are made). An older manifest missing one of these settings counts as changed, so it rebuilds once;
+  - a saved file is missing or damaged.
+  When reused, the summary says "training photos: snapshot <id> (N photos) reused".
+- Safety: the snapshot is written under a temporary name and renamed at the end, so a Colab disconnect never leaves half
+  a snapshot. A damaged snapshot never replaces the photos on disk; it just triggers a rebuild.
+- Fair comparisons: the snapshot id is now part of the training "recipe", so a new snapshot automatically re-measures the
+  noise floor. Each new model version records which snapshot it was trained on (`training_set`). The first loop retrain
+  says "the current model was trained on a different set of original photos, so this comparison is not yet like-for-like"
+  (true for the model from the spatial notebook).
+- Code: `loop.prepare_training_photos` (now with `snapshot_dir`), new `photo_settings`, `footage_list`, `write_snapshot`,
+  `restore_snapshot`, `PHOTO_PIPELINE_VERSION`; `retrain.recipe_of / retrain / measure_noise_floor / save_version` take the
+  snapshot id. Standard library only. Nothing goes into git. 7 new tests; all 173 tests pass.
+
+**Next:** 29e ("phone camera" blur/noise augmentation), then 29f, 29g, 29h, 29i. Research suggested doing 29h (failed
+notebook steps stop "Run all") and 29i (sharper walk frames at full size) before your first real walk; when 29i is done it
+will bump `PHOTO_PIPELINE_VERSION` so the snapshot rebuilds once with the better frames.
+
+**Authorship check:** all commits on `main` and on this branch are by Claude or Alex (GitHub web merges as committer).
+
+**For Alex to decide:**
+- Should 29h and 29i jump ahead of 29e-29g? Research (11-21, 11-22) recommends them before your first real walk; the
+  roadmap order puts them last. If you say nothing, I keep roadmap order.
+- Nothing changes in how you run the learning-loop notebook. The first retrain after this will take as long as before
+  (it builds and saves the snapshot); later ones start sooner. It uses about 0.2-0.4 GB of your Drive.
+
 ## 2026-11-20
 **This includes everything from PRs #55, #57 and #58.** Merging this one is enough; the others will close automatically.
 Everything the roadmap marks as done is already on `main` (checked).
