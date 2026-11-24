@@ -3,6 +3,461 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-24
+
+**Summary.** Eight pull requests are open; the newest, #63 (dev 11-23, task 29d), already contains #62, #61, #60, #59, #58, #57 and
+#55, so I started from it. Task 29d is now done, so the next task the dev routine will build (Wed 11-25) is **29e, "phone camera"
+augmentation** (motion blur, focus blur, noise, JPEG compression on training photos). Today I checked 29e's plan line by line against
+the code in the newest torchvision wheel (0.29.2, read from PyPI) and found three things that would bite: (1) `v2.JPEG`, which 29e
+names, runs through `torchvision.io.encode_jpeg/decode_jpeg`, and **torchvision 0.29 deprecated all of its image encoders/decoders**
+("will be removed in a future release", moving to TorchCodec). The notebooks install the newest torchvision, so 29e would be built on
+a part that is on its way out. (2) `v2.GaussianNoise` takes one fixed `sigma`, not a range, so 29e's "sigma drawn from 0.01-0.03"
+cannot be written with that class as described. (3) The `v2.*` random transforms draw from torch's global generator, while
+`train_transform` keeps its own generators and saves them in checkpoints so a resumed run (PR #55) continues identically; 29e does not
+say to join that. **One roadmap change: a refinement of 29e**, no new tasks (five research tasks are still queued). New-model scan:
+no new Apache-2.0 detector or Depth Anything release this week.
+
+### Recommendations
+
+**1. Build 29e on parts that will last and that resume correctly (refines 29e; tiny effort, removes a future break and a resume gap).**
+- JPEG with OpenCV: `cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, q])`, `cv2.imdecode`,
+  `COLOR_BGR2RGB`, back to float32 0-1. Measured here with OpenCV 5.1: ~10 ms per 960x640 photo (worst case, random noise image), a
+  pure-red image stays red (254, 0, 2). The RGB->BGR step matters because JPEG converts to brightness + colour channels assuming
+  OpenCV's channel order; skipping it would compress the wrong colours. OpenCV is already in `requirements.txt` (Apache-2.0).
+- Noise: draw `sigma` from 0.01-0.03 with the transform's own generator and call `F.gaussian_noise(img, sigma=s, clip=True)`
+  (`torchvision.transforms.v2.functional`); the per-pixel noise itself can come from torch (it is not a "choice").
+- Same for focus blur: draw sigma, call `F.gaussian_blur(img, [5, 5], [s, s])`. Motion blur stays own code (conv2d), as planned.
+- One `random.Random` for all degrade choices, seeded in `apply.reseed` (`value + 2`), saved in `get_state` and restored in
+  `set_state`. Today `get_state` returns a 2-tuple; make the third element optional so older checkpoints still resume.
+- Why here: Alex trains on free Colab, where sessions drop and runs resume from checkpoints (task 23h / PR #55). If degrade choices
+  came from torch's global generator, a resumed run would see different photo damage than the uninterrupted one, quietly breaking the
+  "same seed = same result" property the noise floor (23f) relies on. And if a future torchvision removes `encode_jpeg`, the
+  learning loop would crash in the middle of a retrain, or, with a "skip if missing" guard, silently drop the JPEG effect.
+- Expected gain: no accuracy change by itself; it keeps 29e working on future Colab installs and keeps resumed runs identical.
+  Effort: a few lines different from the current plan + 3 tests. Risk: very low. Licence: OpenCV Apache-2.0, torchvision BSD-3.
+
+### Considered but not recommended
+- **Realistic sensor noise (Poisson-Gaussian "shot noise", noise that grows with brightness; 2025-26 low-light papers report big
+  gains in the dark):** those gains are for really dark scenes and usually RAW images; Alex films indoor rooms on a phone that already
+  denoises. Plain Gaussian noise is enough as a first try; revisit only if 29e's own-footage numbers show dim rooms are the problem.
+- **Chaining effects in camera order (blur -> noise -> JPEG, as super-resolution training does) instead of one effect:** more realistic
+  but harder to judge which part helps; 29e's one-at-a-time design with a stress score is the better first experiment.
+- **Moving image decoding to TorchCodec:** the project reads photos with OpenCV/PIL, not `torchvision.io` (checked), so the
+  deprecation affects only `v2.JPEG`.
+- **Depth Anything 3 Metric-Large (Apache-2.0):** already looked at on 10-19 (too big next to the detector on a free GPU); still no
+  small metric version. DA3 Small/Base remain Alex's choice to try (see "For Alex to decide").
+- **New detectors:** nothing new under Apache-2.0 this week (RF-DETR N-L Apache-2.0, its XL/2XL under a different licence; YOLOX and
+  PP-PicoDet are older permissive options, weaker than our Faster R-CNN setup is likely to need). No reason to change Alex's choice.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: 29h and 29i before your first real walk (11-21, 11-22), OWLv2 "text + examples" after
+  29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as a third labeller (11-07).
+
+### Sources
+- torchvision 0.29.2 wheel from PyPI (read `transforms/v2/_augment.py` `JPEG`, `functional/_augment.py` `jpeg_image`,
+  `_misc.py` `GaussianNoise`/`GaussianBlur`, `io/image.py` `_DEPRECATION_MSG`): https://pypi.org/project/torchvision/0.29.2/
+- torchvision 0.29.0 release notes (image decoders/encoders deprecated, TorchCodec): https://newreleases.io/project/github/pytorch/vision/release/v0.29.0
+- Repo code: `claudeknows/detector.py` (`train_transform`, `reseed`/`get_state`/`set_state`, checkpoint `transform_rng`), ROADMAP 29e.
+- Motion blur and detectors (Sayed & Brostow, CVPR 2021): https://openaccess.thecvf.com/content/CVPR2021/papers/Sayed_Improved_Handling_of_Motion_Blur_in_Online_Object_Detection_CVPR_2021_paper.pdf
+- Low-light synthetic pipeline with detection gains (2025): https://arxiv.org/abs/2504.12169 ; RAW Poisson-Gaussian augmentation for
+  pedestrian detection (2026): https://arxiv.org/abs/2605.22455
+- Depth Anything 3 model licences: https://github.com/ByteDance-Seed/Depth-Anything-3
+- RF-DETR licences by size (JetBrains, Jul 2026): https://blog.jetbrains.com/pycharm/2026/07/best-object-detection-models-for-machine-learning-in-2026/
+- YOLOX-Nano swap from AGPL YOLO11n (example of the licence issue): https://github.com/angweij1431/EIU_Licenseplatedetector/releases/tag/v0.2.0
+
+## 2026-11-23
+
+**Summary.** Six pull requests are open; the newest, #61 (research 11-22), already contains #60, #59, #58, #57 and #55, so I
+started from it. Six research tasks (29d-29i) are now waiting for the dev routine, so today I deliberately added **no new task**
+and instead checked that the waiting ones still fit together and still match the newest libraries. Library check: torch 2.15.0 /
+torchvision 0.29.2 (28 Oct), transformers 5.24.0 (21 Nov), rfdetr 1.12.1 (12 Nov, package Apache-2.0), ensemble-boxes 1.0.11,
+opencv-python-headless 5.1.0.95. In the transformers 5.24.0 OWLv2 code, `class_predictor(image_feats, query_embeds, query_mask)` and
+the outputs `class_embeds`, `pred_boxes`, `image_embeds` are unchanged, so task 29g's plan still works as written (the notebooks
+install transformers unpinned, so this matters); `post_process_grounded_object_detection` is still the name `autobox.post_process`
+looks for first. No new Apache-2.0 detector and no new Depth Anything release found (Depth Anything 3, Nov 2025, is still the newest;
+its large models are CC BY-NC). One real gap found between two waiting tasks: **29d** (save the original training photos once in
+Drive and reuse them) decides "reuse or rebuild" from the file list of Alex's footage and a few settings, but not from *how* frames
+and boxes are made. **29i** (and 29g) change exactly that. If 29d is built first (it is earlier in the list), the snapshot made before
+29i would keep being reused, so 29i's sharper own-footage frames would never reach training, with no message. **Two small
+refinements** (to 29d and 29i), no new tasks.
+
+### Recommendations
+
+**1. Snapshot "recipe" check covers how photos are made (refines 29d and 29i; tiny effort, removes a silent failure).**
+- What: in 29d's `manifest.json` `settings`, also record the frame-extraction settings (`fps`, `DETECT_SIDE`, `BLUR_THRESHOLD`; later
+  `BLUR_SIDE`, `best_of` from 29i), the OWLv2 model name (later `--owl-mode` / queries version from 29g), and a hand-bumped constant
+  `PHOTO_PIPELINE_VERSION = 1` in `loop.py`. Compare key by key; a key missing from an older manifest counts as changed, so old
+  snapshots rebuild once. The summary names the changed keys. 29i gets a step (5): bump the version and add its two settings, so the
+  first run after 29i rebuilds the snapshot.
+- Why a hand-bumped version as well as settings: settings catch the knobs we know about; a version number catches code changes that
+  have no knob (e.g. a fix to how a video is decoded). It is the same idea as a cache key in build tools and data-versioning tools
+  (DVC re-runs a stage when its parameters or code dependencies change). Hashing the source files of `frames.py`/`autobox.py` would
+  also work but rebuilds after harmless edits (comments, tests), and each rebuild costs a long Colab step (re-downloads, OWLv2 twice).
+- Why here: 29d's purpose is that every retrain sees the *same* original photos; 29i's purpose is *better* own-footage frames. Without
+  this, whichever is coded second partly cancels the other, and nothing would say so. The snapshot id already feeds `retrain.recipe_of`,
+  so a rebuild also re-measures the noise floor through the existing path (correct: the training photos really changed).
+- Expected gain: no accuracy change by itself; it makes sure 29i (and 29g if Alex turns it on) actually reach training. Effort: about
+  20 lines + 3 tests. Risk: very low (worst case one extra rebuild). Licence: own code, standard library.
+
+### Considered but not recommended
+- **New tasks today:** six research tasks are already queued (29d-29i); adding more would only lengthen the queue. Better to let the dev
+  routine catch up and let real walk results show where the next gain is.
+- **Pinning `transformers` in the notebooks:** OWLv2 parts we use are unchanged in 5.24.0 and `autobox.post_process` already handles
+  the v5 rename; pinning would also freeze security/bug fixes. Revisit only if a future release breaks the tests or a Colab run.
+- **RF-DETR 1.12 / YOLO26 / announced YOLO27:** RF-DETR Nano-Large stays the Apache-2.0 option (the biggest variant has a different
+  licence); YOLO26 is AGPL-3.0; YOLO27 is waitlist-only with no licence stated. No reason to change Alex's Faster R-CNN choice.
+- **Self-training papers (2026 IEEE T-IV "self-training with accurate labelling and class balancing"; "Look Around and Learn",
+  consensus over views):** their key ideas (repeated rounds, class balancing, agreement across views) are already in tasks 26, 29b,
+  29c; nothing new to add.
+- **Roboflow100-VL (NeurIPS 2025) few-shot benchmark:** confirms that open-vocabulary detectors need a few real examples for unusual
+  objects (supports 29g), but adds no new technique for us.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: do 29i before your first real walk (11-22), 29h first (11-21), OWLv2 "text + examples" after
+  29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small (10-19), SAM 3 as a third labeller (11-07).
+
+### Sources
+- Repo code: `claudeknows/loop.py` (`prepare_training_photos`), `frames.py` (`extract_frames`, `MAX_SIDE`, `BLUR_THRESHOLD`),
+  `autobox.py` (`post_process`), ROADMAP tasks 29d, 29g, 29i.
+- transformers 5.24.0 on PyPI (OWLv2 `modeling_owlv2.py`, `processing_owlv2.py` read from the wheel): https://pypi.org/project/transformers/5.24.0/
+- torchvision 0.29.2: https://pypi.org/project/torchvision/ ; rfdetr 1.12.1: https://pypi.org/project/rfdetr/
+- DVC: stages re-run when params or dependencies change: https://dvc.org/doc/user-guide/pipelines/defining-pipelines
+- Depth Anything 3 README (latest release, Nov 2025; model licences): https://raw.githubusercontent.com/ByteDance-Seed/Depth-Anything-3/main/README.md
+- YOLO26 (AGPL-3.0): https://learnopencv.com/yolov26-real-time-deployment/ ; Ultralytics roadmap (YOLO27): https://www.ultralytics.com/roadmap
+- RF-DETR variant licences (HN, Roboflow co-founder): https://hn-clone-remix.netlify.app/item/48639165
+- Self-training with accurate labelling and class balancing (IEEE T-IV, Jan 2026): https://trid.trb.org/View/2685920
+- Look Around and Learn: https://arxiv.org/pdf/2302.03566
+- Roboflow100-VL: https://arxiv.org/abs/2505.20612
+
+## 2026-11-22
+
+**Summary.** Five pull requests are open; the newest, #60 (research 11-21), already contains #59, #58, #57 and #55, so I started
+from it. Searches for new models turned up nothing that changes the plan (no new Apache-2.0 detector or Depth Anything release
+since 11-21; RF-DETR Nano-Large is still the open option, YOLO26 is still AGPL). So today I read the code that turns Alex's walk
+videos into training photos, and found a real gap: **walk frames are saved at only 256 px on the long side**, while every other
+detector photo (Open Images, Alex's own footage) is kept at 960 px. `loop.run_loop` calls `walks.import_walks` with its default
+`max_side=frames.MAX_SIDE` = 256, the old size from the classifier days (task 14). Those small frames are then labelled by OWLv2
+(which works on a 960x960 input, so they are blown up about 3.75x) and by the detector (640x960), and the agreed boxes are mixed into
+retraining as up to 30% of the data. A key 2 m away that is 30 px wide in the real video is about 8 px wide in a 256 px frame: OWLv2
+and the detector will mostly miss it, and keys are already the weakest object. Second, the blur filter uses one fixed number
+(`BLUR_THRESHOLD = 60`) but its score depends strongly on the saved size: on a test texture I measured the same mild blur scoring 38
+at 960 px but 1,425 at 256 px, so own-footage frames (960 px) are filtered very strictly and walk frames (256 px) hardly at all.
+**One roadmap change:** new task 29i, "walk frames at detection size, blur check that means the same at any size, and the sharpest
+frame in each half-second". As far as PROGRESS.md shows, no real walk has been processed yet, so fixing this before the first walk
+means no old frames need redoing.
+
+### Recommendations
+
+**1. Walk frames at detection size + size-independent blur check + sharpest frame per window (new task 29i; small effort, low risk).**
+- What, part 1 (size): import walks at `DETECT_SIDE` (960) like all other detection photos. Move the constant into `frames.py` and
+  re-export it from `detection_data.py` (avoids a circular import); `import_walks(..., max_side=DETECT_SIDE)`; `walks` CLI gets
+  `--max-side`. Never upscale a smaller video (today's `shrink` already does this).
+- Part 2 (blur check): `blur_score` scores a copy shrunk to `BLUR_SIDE = 256` (`cv2.INTER_AREA`), whatever size the frame is saved
+  at, so `BLUR_THRESHOLD = 60` keeps the meaning it was tuned for in task 14. Measured here (OpenCV 5.1, a smoothed-noise texture,
+  Gaussian blur sigma in 960-px pixels): sharp 813 at 960 vs 4,232 at 256; sigma 1.5: 38 vs 1,425; sigma 3: 3.8 vs 233. The
+  variance of the Laplacian measures fine detail per pixel, and shrinking packs more detail into each pixel. PyImageSearch and a
+  3-D scene-graph paper both note the threshold is scene- and setup-dependent; scoring at one fixed size removes the size part.
+  Side effect: own footage (stored at 960) will be judged less strictly than today; part 3 keeps it sharp.
+- Part 3 (sharpest frame per window): decode at 3x the wanted rate (ffmpeg `fps=6`, OpenCV step / 3) and keep the frame with the best
+  `blur_score` in each group of 3 consecutive frames (one per 0.5 s at 2 fps), then apply the threshold. Same number of frames, far
+  fewer blurry ones: a walking phone produces bursts of motion blur that last a fraction of a second, so a neighbour 1/6 s away is
+  often sharp. This is what photogrammetry / 3-D capture tools do (cansik `sharp-frame-extractor`: sharpest frame per time window;
+  `sharp-frames-python` "batched" mode). `extract_frames(..., best_of=3)`; `best_of=1` = today's sampling. Applies to walks and to
+  Alex's own footage (`import_own`). Decoding 3x more frames costs a few extra seconds per minute of video.
+- Older walks: if any walk was imported before the fix, leave its frames alone (labels and Alex's answers point to those files) and
+  say once in the summary "walk X: frames stored at 256 px (imported before 2026-11-22)", found from the first frame's size.
+- Tests (CPU, tiny OpenCV-made videos): walk frames have long side 960 for a bigger video and are not upscaled for a smaller one;
+  `blur_score(img)` and `blur_score(shrink(img, 256))` agree within 10%; a video where every 3rd frame is sharp and the others
+  blurred keeps only sharp frames with `best_of=3`, with the same frame count as `best_of=1`; `best_of=1` gives today's frames; the
+  manifest still processes each walk once.
+- Why here: phase 2's whole point is learning from walks. With 256 px frames the walk data is the lowest-quality part of every
+  retrain, it is least useful for exactly the small, far objects (keys) that walks are meant to teach, and Alex's yes/no view (480 px)
+  shows him a blown-up 256 px photo, which makes his answers harder too. Small-object detection depends heavily on pixels on the
+  object (the SAHI paper in our 10-22 sources, and our own tiles/zoom work 23g/23j, exist for this reason); keeping 4x fewer pixels
+  in the frames throws that away before any model sees them.
+- Expected gain: not measurable until real walks exist, but it removes a 3.75x resolution gap between walk frames and everything
+  else, for both labellers and for training. Risk: low. Drive space: ~150-250 KB per frame instead of ~20 KB, so ~40-60 MB per
+  walk of ~240 frames; fine on a free 15 GB Drive for many walks. Licence: own code; OpenCV (Apache-2.0), ffmpeg already used.
+
+### Considered but not recommended
+- **Adaptive blur threshold (moving average of scores, as in the 3-D scene-graph paper):** handles plain walls that look "blurry",
+  but part 3 already keeps the best frame nearby; add only if walk summaries show many frames dropped as blurry.
+- **Storing walk frames at full phone resolution (1080-4K):** the detector trains at 640x960 and OWLv2 at 960; bigger files would
+  only cost Drive space (960 px is also enough for the 1.7x tiles of 23g).
+- **DepthART (~6M-parameter Depth Anything variant, ACM MM 2026):** interesting for a robot later, but no official weights or licence
+  found; V2 Small stays.
+- **SAS-Det / DAT self-training for open-vocabulary detectors (2023, May 2026):** they fine-tune the open-vocabulary model itself; we
+  deliberately keep OWLv2 fixed as an independent labeller.
+- **New detectors:** nothing new under Apache-2.0; torchvision 0.29.x (Oct 2026) shows no detection-model changes found.
+
+### For Alex to decide
+- Whether 29i should be done **before your first real walk** (and so before 29d-29h). It is small, and every walk imported before it
+  keeps its 256 px frames for good (each walk is imported only once). If you want that, add a line to "Notes from Alex", e.g.
+  "do 29i first". By the rules I placed it after 29h. Still open from earlier: 29h first (11-21), OWLv2 "text + examples" after
+  29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small (10-19), SAM 3 as a third labeller (11-07).
+
+### Sources
+- Repo code: `claudeknows/loop.py` (`run_loop` -> `import_walks(walks_src, frames_dir)`), `walks.py` (`max_side=MAX_SIDE`),
+  `frames.py` (`MAX_SIDE = 256`, `BLUR_THRESHOLD = 60`), `detection_data.py` (`DETECT_SIDE = 960`).
+- OWLv2 preprocessor (960x960 input): https://huggingface.co/google/owlv2-base-patch16/blob/main/preprocessor_config.json
+- Blur detection with OpenCV, threshold is domain dependent: https://pyimagesearch.com/2015/09/07/blur-detection-with-opencv/
+- 3-D Scene Graph (fixed Laplacian threshold flags low-texture frames; adaptive threshold): https://arxiv.org/pdf/1908.04929
+- sharp-frame-extractor (sharpest frame per time window): https://awesome.ecosyste.ms/projects/github.com%2Fcansik%2Fsharp-frame-extractor
+- sharp-frames-python (batched sharpest-frame selection): https://github.com/reflct/sharp-frames-python
+- Filtering video frames by sharpness for photogrammetry: https://ryanfb.github.io/etc/2015/01/22/filtering_video_frames_by_sharpness_for_photogrammetry.html
+- RF-DETR licences (Nano-Large Apache-2.0): https://raw.githubusercontent.com/roboflow/rf-detr/HEAD/README.md
+- DepthART write-up (ACM MM 2026): https://finance.sina.cn/stock/jdts/2026-10-07/detail-iniuksym4764240.d.html
+- Taming Self-Training for Open-Vocabulary Detection (SAS-Det): https://arxiv.org/html/2308.06412v3 ; DAT: https://arxiv.org/pdf/2605.03642
+
+## 2026-11-21
+
+**Summary.** Four pull requests are open: #59 (dev, task 29c), which already contains #55, #57 and #58, so I started from #59.
+Next to be coded are tasks 29d-29g. Today I went back to the one real problem from Alex's own runs: on 11-18 training crashed in its
+first seconds, yet the notebook carried on and only the *save* step complained ("No such file: detector.pt"). The dev fix (11-19)
+repaired the resume file and added a "does detector.pt exist?" check after training. I checked why this happened at all, in the
+source code of the tools: in Colab, a `!command` line that fails only stores its exit code in a hidden variable (`_exit_code`) and
+never raises an error (colabtools `_system_commands._system_compat`; same in IPython 9.8 `system_piped`), so "Run all" happily runs
+every later cell. The spatial notebook still has 10 such `!python -m claudeknows ...` steps without a check (download, import from
+Drive, OWLv2 auto-boxing and fill-in, contact sheets, summary, report, the composite A/B run, the distance check), the gold-set
+notebook 2 more (import, auto-boxing), plus `!pip install` and `!git` in all three notebooks. A failed fill-in or report step today goes unnoticed and later cells show results from stale or
+half-made files. **One roadmap change:** new task 29h, "every notebook step stops Run all with a plain message when it fails". It is
+not a model-training technique, but it protects every training run Alex starts and costs about an hour of dev time. Nothing new on
+models: no new Apache-2.0 detector or depth release found since 11-20 (Depth Anything 3 from Nov 2025 is still the newest; already
+discussed 10-19). The Colab free tier is unchanged in 2026 (Colab moved into Google AI plans on 22 Sep 2026, a paid perk only; free
+T4 still has no guarantee and a ~90-minute idle disconnect, which task 23n's resume already covers). rfdetr.roboflow.com was not
+reachable from this session.
+
+### Recommendations
+
+**1. Notebook steps that fail stop "Run all" (new task 29h; small effort, very low risk).**
+- What: one tiny helper, defined in the first code cell of `spatial_colab.ipynb`, `learning_loop.ipynb`, `gold_set.ipynb` (and
+  `try_spatial.ipynb` if it has `!` steps), used instead of bare `!` lines:
+  ```python
+  def step(cmd, what):
+      get_ipython().system(cmd)
+      code = get_ipython().user_ns.get("_exit_code", 0)
+      if code != 0:
+          raise SystemExit(f"Step '{what}' failed (exit code {code}), so the notebook stopped here. "
+                           "The lines just above say why. Fix or retry, then Runtime -> Run all again.")
+  ```
+  `get_ipython().system` is exactly what `!` calls, so output still streams live into the cell (progress bars too); the only change is
+  the check. Build `cmd` as a plain Python f-string with `shlex.quote()` around paths (e.g. `DRIVE_DIR`, `folder`, `out`) instead of
+  `$VAR` expansion, and keep `{` `}` out of the final string (Colab runs `var_expand` on it).
+- Where: every `!python -m claudeknows ...`, `!pip install ...`, `!git clone/fetch` line; inside the contact-sheet `for` loop too.
+  Leave purely informational lines (`!git log -1`, `!ffmpeg -version | head -1`) as `!`. Keep the existing "detector.pt missing"
+  message after training (it adds the resume hint); it now becomes a second safety net. For the optional composite A/B cell, a failure
+  should stop only that comparison, not lose the main model: it runs after `detector.pt` is saved to Drive, so stopping there is fine.
+- Tests (CPU, no Colab): a test reads every notebook JSON and fails if any code line starts with `!python`, `!pip` or `!git clone`/
+  `!git fetch` (allow-list `!git log`, `!ffmpeg -version`); a test executes the helper's source with a fake `get_ipython()` whose
+  `system()` sets `_exit_code` to 0 / 2 and checks that 0 passes and 2 raises `SystemExit` with the step name in the message.
+- Why here: Alex runs the notebooks with one "Run all" and is new to this; the only crash he has hit so far looked like a different
+  problem because of exactly this behaviour. Phase 2 makes it more important: the loop notebook will soon be the routine thing he
+  runs, and a silent failure there could, for example, leave old auto-labels in place while later cells report as if all is well.
+- Expected gain: no accuracy gain; it removes a whole class of confusing "it says done but nothing changed" runs and wasted GPU time.
+  Risk: very low (if a command that used to "fail harmlessly" now stops the notebook, that is a real bug surfacing). Licence: own
+  code; IPython (BSD-3) and colabtools (Apache-2.0) behaviour only.
+- Alternative considered: Colab's `%shell` line magic raises `CalledProcessError` on failure, but the message is a raw traceback and
+  it is Colab-only; `%%bash` (IPython raises by default) splits Python and shell into separate cells. The helper is clearer.
+
+### Considered but not recommended
+- **Running each step with `subprocess.run(..., check=True)`:** in a notebook, a child process's output is not shown in the cell unless
+  captured and re-printed line by line (progress bars break); `get_ipython().system` keeps Colab's live output.
+- **Switching notebooks to Python-function calls everywhere (no shell steps):** the learning-loop notebook already does this; for the
+  spatial notebook it is a bigger rewrite and loses the clean command-line logs. Not worth it now.
+- **Paid Colab (Google AI plans, Sep 2026) for steadier GPUs:** a cost decision, not needed; resume (23n) handles disconnects.
+- **New detectors / depth:** nothing new under Apache-2.0 found since 11-20; Depth Anything 3 (Nov 2025) still the newest.
+
+### For Alex to decide
+- Whether 29h should jump the queue and be done before 29d-29g: it is small and protects every run. By the rules it goes after the
+  current phase-2 tasks; tell the dev routine in "Notes from Alex" if you want it first. Still open from earlier: switching OWLv2 to
+  "text + examples" after 29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small (10-19), SAM 3 as a third labeller
+  (11-07), fresh gold photos when the wear warning appears (11-13).
+
+### Sources
+- Google colabtools, `_system_commands.py` (`!` stores `_exit_code`, never raises; `%shell` calls `check_returncode()`): https://github.com/googlecolab/colabtools/blob/main/google/colab/_system_commands.py
+- IPython 9.8.0 source (`interactiveshell.py` `system_piped`/`system_raw` set `_exit_code`; `magics/script.py` `%%bash` raises `CalledProcessError` unless `--no-raise-error`): https://github.com/ipython/ipython/blob/main/IPython/core/interactiveshell.py , https://github.com/ipython/ipython/blob/main/IPython/core/magics/script.py
+- IPython issue on inconsistent `_exit_code`: https://www.github.com/ipython/ipython/issues/9149
+- Colab moves into Google AI plans (22 Sep 2026): https://developers.googleblog.com/colab-is-now-part-of-your-google-ai-plan/
+- Colab FAQ (free-tier dynamic limits, no guaranteed GPU): https://research.google.com/colaboratory/intl/en-GB/faq.html
+- Depth Anything 3 (latest family release, Nov 2025): https://arxiv.org/abs/2511.10647v1
+
+## 2026-11-20
+
+**Summary.** Two pull requests are open: #57 (research 11-19, which already includes `main` and the new gold-set notebook) and #55
+("survive a broken resume file", a dev branch). I started from #57, the newest; #55 is separate and not included here. Next to be coded
+are tasks 29c-29f. Yesterday's task 29f will, for the first time, measure how well OWLv2 finds each object on Alex's checked photos. Today
+I looked at the obvious follow-up: **if OWLv2 turns out weak on keys (likely), what is the cheapest way to make it better without
+training it?** OWLv2 is the gatekeeper for keys: every keys training photo is boxed by it (Open Images has no key boxes), and it is
+one of the two labellers that must agree before a walk frame becomes training data. Today it is asked with one short sentence per
+object (`autobox.PROMPTS`, e.g. "a bunch of keys"). OWLv2 can also be asked with **example pictures**: give it a few boxed examples of
+the object, turn each into the same kind of "what this object looks like" vector the text sentence produces, and average them. The
+original OWL-ViT paper reports this one-example ("image-conditioned") mode at 41.8 AP50 on COCO classes it was never trained on, against
+26.0 for the previous best method, rising to 46.8 with 10 examples averaged; Prova (AAAI 2025) found that mixing text and picture
+"prototypes" beats text alone by 3-6 AP. In this project the examples would be the boxes Alex has already said "yes" to in review
+batches (stored as `by="alex"`), plus Open Images human boxes for bottles and shoes, so OWLv2 learns what *his* keys look like in
+*his* rooms, at the cost of one extra matrix multiply per photo. I checked the `transformers` 5.23 source: the built-in
+`image_guided_detection` picks the example box automatically (the "most object-like" box in the example photo, not the one a person
+boxed), which is known to work poorly, so the task spells out the right way using the model's own `class_predictor` and
+`box_predictor`. **One roadmap change:** new task 29g, an optional "text + examples" OWLv2 mode, off by default; switching it on is
+Alex's decision once 29f shows the numbers. Nothing new on detectors: RF-DETR 1.12.0 (5 Nov 2026) only adds export metadata.
+arxiv.org, huggingface.co and mdpi.com were not reachable from this session, so paper details come from search summaries
+(provisional); the `transformers` details come from reading the installed-package source directly.
+
+### Recommendations
+
+**1. Example-boosted OWLv2 queries: "text + examples" mode (new task 29g; small-medium effort, low risk because it is off by default).**
+- What: for each object build ONE query vector `q = normalise((1 - a) * normalise(t) + a * normalise(v))`, where `t` is today's
+  text embedding (from `PROMPTS`) and `v` is the mean of the normalised embeddings of up to 20 boxed example crops of that object.
+  `a = 0` is exactly today's behaviour; try `a = 0.5` (mix) and `a = 1.0` (examples only). OWL-ViT averages example embeddings
+  the same way; Prova mixes text and picture prototypes.
+- How (verified against the `transformers` 5.23 OWLv2 source):
+  - Example embedding: run the usual forward pass on the example photo (`model(**processor(text=..., images=...))`). The output has
+    `class_embeds` (one already-normalised vector per image patch) and `pred_boxes` (one box per patch, centre-x/centre-y/w/h as
+    fractions of the padded square). Convert the example's box (fractions of the photo) to the padded square (`x * w / side`,
+    `y * h / side`, `side = max(w, h)`, as `owl_detector` already does in reverse), pick the patch whose `pred_boxes` box has the
+    highest IoU with it, and use that patch's `class_embeds`. Skip the example if the best IoU is below 0.5 (say how many were skipped).
+    Do NOT use `model.image_guided_detection`: it ignores the given box and takes the most "object-like" box in the example photo.
+  - Detection with `q`: after today's forward pass, `feats = out.image_embeds.reshape(1, -1, D)`;
+    `logits, _ = model.class_predictor(feats, query_embeds=Q[None])` (Q = the three query vectors, one per object);
+    `scores = sigmoid(logits)`; boxes = the same `out.pred_boxes`; then the same per-object cut-off and NMS as now. One extra small
+    matrix multiply per photo; no new model download.
+  - Where the examples come from (never gold, never test): `by="alex"` boxes from answered review questions (the only human key
+    boxes that exist outside the gold set), plus `by="openimages"` human boxes from the TRAIN split for bottles and shoes. Reject any
+    photo where `gold.is_gold` is true. Pick up to 20 per object, seeded; under 3 examples for an object, that object stays text-only
+    and the summary says so.
+  - Freeze it: save the three vectors with the list of example files, their hashes, `a` and the OWLv2 model name to Drive
+    `claudeknows_models/owl_queries.pt`; reuse it every run. Rebuild only while an object has fewer than 20 examples and new `alex`
+    boxes exist, and print "OWLv2 queries version N (keys: 7 examples)" in the loop summary, so a change of labeller is always
+    visible and never silent. Add the query version to 29f's cache key so the labeller check re-runs when the queries change.
+  - Flag `--owl-mode text|mix|examples` (default `text`) on `autobox` and in the loop notebook.
+- How to decide (report only, like 29f): score changes, so a fixed cut-off of 0.3 does not mean the same thing in each mode. Compare
+  modes by precision and recall at several cut-offs (0.15-0.6): for bottles and shoes on held-out Open Images VALIDATION photos with
+  human boxes (not gold); for keys only in the 29f gold table, where 29f simply gets one row per mode. The loop never switches mode
+  or cut-off by itself (that would tune on gold); if "mix" finds clearly more keys at similar precision, the summary says so as a
+  suggestion for Alex.
+- Tests (CPU, fake model objects returning fixed tensors): `a = 0` gives exactly today's boxes and scores; the example picker chooses
+  the patch whose box matches the given box, not the highest-scoring one; best IoU < 0.5 -> skipped; a gold photo is never used as
+  an example; fewer than 3 examples -> that object stays text-only; same inputs and seed -> same vectors; saved file reloads to
+  identical vectors and is not rebuilt when nothing new exists.
+- Why here: keys are the weakest object and OWLv2 decides which key boxes exist at all. Alex's "yes" answers are the only checked
+  key boxes in his rooms; today they only become training data for the detector. Feeding a few of them back to OWLv2 as examples
+  helps it on the next walk too, so each answer is worth more. It needs no training, no new model and costs nothing at run time.
+- Risks: examples taken only from review batches are "hard" cases (that is fine for a prototype), and a wrong "yes" from Alex would
+  pull the query toward the wrong thing (capped by averaging up to 20). Self-reinforcement is limited because only human-confirmed
+  boxes are used, never OWLv2's own boxes.
+- Licence: own code; OWLv2 weights and `transformers` Apache-2.0 as now. Expected gain: unknown for keys until 29f measures it; the
+  literature suggests a clear gain for classes that text describes badly (keys: "a bunch of keys" vs. a single car key on a table).
+
+### Considered but not recommended
+- **Text prompt ensembles only (several sentences per object, e.g. "a key", "a car key", "keys on a keyring", averaged):** OWL-ViT
+  averages 7 templates, but a 2026 aerial benchmark (arXiv 2601.22164) found synonym expansion and prefixes gave no meaningful gain;
+  examples carry information text cannot. Could be added as `PROMPTS` lists later at no cost if 29f shows text is the weak part.
+- **Fine-tuning OWLv2 on the confirmed boxes:** 100M+ parameters, few confirmed boxes, and it would make the two labellers less
+  independent; the query-only change keeps OWLv2 frozen.
+- **VisTex-OVLM (ICCV 2025; examples turned into text tokens):** stronger few-shot results, but needs training extra blocks and
+  was shown on GLIP / Grounding DINO, not OWLv2.
+- **Using OWLv2's own confident boxes as examples:** circular (it would confirm what it already sees); only human-checked boxes.
+- **New detectors / depth:** RF-DETR 1.12.0 (5 Nov 2026) adds export metadata only; nothing else new under Apache-2.0.
+
+### For Alex to decide
+- Not now, but later: when 29f and 29g have run, whether to switch OWLv2 from text-only to "text + examples" (the summary will
+  show the keys numbers side by side). Still open from earlier: RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small
+  (10-19), SAM 3 as an optional third labeller (11-07), fresh gold photos when the wear warning appears (11-13), a lower OWLv2 keys
+  cut-off if 29f suggests it (11-19).
+
+### Sources
+- OWL-ViT, Simple Open-Vocabulary Object Detection (ECCV 2022; one-shot image-conditioned 41.8 AP50 vs 26.0, 10 examples 46.8, example embeddings averaged): https://arxiv.org/pdf/2205.06230 , https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136700714.pdf
+- OWL-ViT prompt templates (7 CLIP prompts averaged per class): https://arxiv.org/pdf/2306.09683v3.pdf
+- Prova, Comprehensive Multi-Modal Prototypes (AAAI 2025; text + visual prototypes, +2.9 to +6.2 AP): https://arxiv.org/abs/2412.17800 , https://ojs.aaai.org/index.php/AAAI/article/view/32232
+- VisTex-OVLM, Visual Textualization for Image Prompted Object Detection (ICCV 2025): https://arxiv.org/html/2506.23785v1 , https://iccv.thecvf.com/virtual/2025/poster/1605
+- OWLv2 visual-prompt query selection demo (default HF choice often underperforms): https://vvmnnnkv-owlv2-visual-prompt.hf.space/
+- Open-vocabulary detectors on aerial images (prompt engineering gave no meaningful gain): https://arxiv.org/pdf/2601.22164
+- Eyewear auto-labelling with zero-shot detectors (prompt testing and threshold calibration needed): https://mdpi.com/2079-9292/13/23/4763
+- SAM 3 (ICLR 2026; OWLv2 as strongest open baseline): https://arxiv.org/pdf/2511.16719
+- `transformers` OWLv2 source (5.23.0; `class_predictor`, `box_predictor`, `embed_image_query` picks the highest-objectness box): https://github.com/huggingface/transformers/blob/main/src/transformers/models/owlv2/modeling_owlv2.py
+- RF-DETR changelog (1.12.0, 5 Nov 2026): https://rfdetr.roboflow.com/develop/changelog/
+
+## 2026-11-19
+
+**Summary.** One pull request is open: #55 ("survive a broken resume file"). It was branched before #56 (the new gold-set notebook)
+was merged into `main`, so I started from #55 and merged `main` into it; this branch has both. Next to be coded are tasks 29c, 29d
+and 29e. What changed this week: **Alex now has a way to build the gold set** (the `gold_set.ipynb` notebook from #56). That means
+there will soon be a small set of photos whose boxes a person has checked, and today I looked at what else that set can tell us
+beyond the promote/keep decision. The whole loop rests on one rule: a walk frame becomes training data only when the current detector
+and OWLv2 agree. Nobody has measured how good the two labellers are on Alex's own rooms. The spot checks from task 29 measure only one
+thing (how often *accepted* boxes are wrong), need about 7 walks before they say anything, and cannot show the other failure: real
+objects that **neither** labeller finds, or that only one finds, so they never become training data. For keys, the weakest object,
+that is the likely problem. Papers on self-training for detection keep finding the same two things: precision and recall of
+pseudo-labels pull against each other as the cut-off moves, and they differ a lot between classes (HyperMODEST 2023; LEOD, CVPR 2024),
+so they should be measured per class on checked labels. The gold set can do that today at almost no cost (one OWLv2 pass over ~50
+photos). **One roadmap change:** new task 29f, a "labeller check" on the gold set, report only. I also looked at Qwen3-VL (Apache-2.0)
+as a stronger labeller for keys, and at Video Depth Anything Small; neither is worth adding now (below). Nothing new on detectors:
+RF-DETR's latest release is still 1.11.2 (3 Oct 2026). Several sites (voxel51.com, blog.roboflow.com, arxiv.org) were not reachable
+from this session, so some details come from search summaries (provisional).
+
+### Recommendations
+
+**1. Labeller check on the gold set: how good are OWLv2, the detector and the "both agree" rule, per object (new task 29f; small effort, low risk).**
+- What: a function `labeller_check(gold_samples, det, owl)` (in `drift.py`, reusing `autobox.iou` and `drift.wilson`) that runs, on
+  every gold photo, (a) OWLv2 at its cut-offs (`autobox.THRESHOLD`), (b) the current detector at its per-object cut-offs (task 23m),
+  and (c) the agreement rule from `selflabel.agree` (same label, IoU >= 0.5, both above cut-off; mean box). Each is matched to the
+  gold boxes (same label, IoU >= 0.5, each gold box matched at most once, highest score first). Per object it reports:
+  - **precision** (of the boxes it proposed, how many are real) and **recall** (of the real boxes, how many it found), each with
+    the Wilson 95% range (`drift.wilson`), and the box counts;
+  - for OWLv2 only: the same two numbers at cut-offs 0.15 / 0.2 / 0.25 / 0.3 / 0.4 / 0.5, as a small table (this shows whether
+    lowering the keys cut-off, as task 23m allows, would find more keys without many false boxes).
+  The steadiness rule is left out (gold photos are single frames); say so in the report: "before the steadiness check".
+- Where it shows: one block in `drift_report.txt` and the loop summary, e.g. "keys: agreed boxes are right 18 of 19 (95%, range
+  75-99%) and find 19 of 31 real keys (61%, range 44-76%); OWLv2 alone finds 24 of 31 at 0.3". Under 10 gold boxes of an object
+  print "too few gold boxes for <object>" instead of numbers.
+- When it runs: in the learning-loop notebook after labelling, only when the gold set's hash or the detector version changed
+  since the last check (store the results in Drive `claudeknows_models/labeller_check.json` with both ids), so normal runs cost
+  nothing. One OWLv2 pass over ~50 photos is about a minute on a T4.
+- **Report only.** It must never change a cut-off, the agreement rule or the gate by itself. Choosing labeller settings by their gold
+  score would make the gold set a tuning set, and the gate's "better on gold" would then be less honest. If the numbers argue for a
+  change (say, OWLv2 keys cut-off 0.2), that is a decision for Alex, written in the summary as a plain suggestion.
+- Why here: the loop's safety rests on "two labellers agree, so the label is probably right". This turns "probably" into a number per
+  object, right away instead of after ~7 walks, and it adds the missing half (recall): if agreed boxes find only, say, a third of the
+  real keys, the loop will keep learning shoes and bottles however good its precision is, and 29b/29c can only partly fix that.
+  It also gives a fair baseline for any future third labeller (SAM 3, LLMDet, Qwen3-VL): run the same check and compare.
+- Tests (CPU, fake detector/OWLv2 functions returning fixed boxes): a perfect labeller gives precision = recall = 1; a labeller that
+  adds one wrong box per photo halves precision and keeps recall; a box with the wrong label counts as wrong; one gold box matched
+  by two proposals counts once; agreement needs both; under 10 gold boxes -> "too few"; a second run with the same gold hash and
+  detector version does not call the labellers again; nothing in `THRESHOLD`, the cut-offs or the gate changes.
+- Licence: own code; OWLv2 Apache-2.0 as now. Expected gain: no direct mAP change; it shows where the self-labels are weak (most
+  likely keys recall), so later choices are made on evidence instead of guesses.
+
+### Considered but not recommended
+- **Qwen3-VL-2B/4B as a labeller for keys (Apache-2.0, released Oct 2025; returns boxes as JSON, 0-1000 coordinates):** may well
+  find keys better than OWLv2, and 2B runs on a free T4. But it gives no calibrated confidence score per box, which the agreement
+  rule, the review ordering and the cut-offs all depend on; and its detection quality on small objects is not documented. Once 29f
+  exists, it can be scored the same way; revisit then.
+- **Weighting self-labelled boxes lower in the loss (soft pseudo-label weights, e.g. DeSimPL 2025, SCMT 2022):** the evidence is
+  mixed (DeSimPL found weighting the class loss hurt; only the box loss helped), torchvision's Faster R-CNN has no per-image loss
+  weights without rewriting its loss code, and the 30% cap plus two-labeller agreement already limit damage. Revisit if 29f or the
+  spot checks show many wrong agreed boxes.
+- **Video Depth Anything Small (Apache-2.0) for steadier distances on walks:** the official metric (metres) version is built on the
+  Large model (CC-BY-NC, not usable commercially); a "Metric Small" repo exists but its terms are only a metadata tag. Distance is not
+  a bottleneck now.
+- **New detectors:** nothing new; RF-DETR 1.11.2 (Oct 2026) is still the latest found.
+
+### For Alex to decide
+- Nothing new today. Still open: RF-DETR / DEIMv2 vs the current detector (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3
+  as an optional third labeller (11-07), fresh gold photos when the wear warning appears (11-13). Once 29f has run, it may suggest a
+  lower OWLv2 cut-off for keys; that would be your call.
+
+### Sources
+- HyperMODEST, confidence filtering trades recall for precision in self-training (2023): https://arxiv.org/pdf/2304.14446
+- LEOD: Label-Efficient Object Detection (CVPR 2024; pseudo-label precision/recall per class over rounds): https://arxiv.org/pdf/2311.17286 , https://openaccess.thecvf.com/content/CVPR2024/supplemental/Wu_LEOD_Label-Efficient_Object_CVPR_2024_supplemental.pdf
+- Adaptive Class-Rebalancing Self-Training for detection: https://arxiv.org/pdf/2107.05031
+- Zero-shot auto-labelling study (Voxel51; best thresholds ~0.2-0.5, vendor material, page not reachable here): https://voxel51.com/blog/zero-shot-auto-labeling-rivals-human-performance
+- DeSimPL, soft pseudo-label weights for domain-adaptive detection (2025): https://www.themoonlight.io/review/de-simplifying-pseudo-labels-to-enhancing-domain-adaptive-object-detection
+- SCMT, confidence-weighted pseudo-labels (IJCAI 2022): https://www.ijcai.org/proceedings/2022/0207.pdf
+- Qwen3-VL (Apache-2.0, 2B released 21 Oct 2025, 2D grounding): https://gitee.com/x-github/Qwen3-VL , https://blog.roboflow.com/use-qwen3-vl-in-google-colab/
+- WeDetect (CVPR 2026; open-vocabulary detector finetuned from Qwen3-VL, 13x faster): https://www.openaccess.thecvf.com/content/CVPR2026/supplemental/Fu_WeDetect_Fast_Open-Vocabulary_CVPR_2026_supplemental.pdf
+- Video Depth Anything licences (Small Apache-2.0, Large CC-BY-NC; metric model from Large): https://gitee.com/chen-chaos/Video-Depth-Anything_iw3 , https://huggingface.co/depth-anything/Metric-Video-Depth-Anything-Small/blob/main/README.md
+- RF-DETR changelog (latest 1.11.2, 3 Oct 2026): https://rfdetr.roboflow.com/latest/changelog/
+
 ## 2026-11-18
 
 **Summary.** Ten pull requests are open. #52 (research 11-17) already contains #51 (task 28, the learning-loop notebook) and every
