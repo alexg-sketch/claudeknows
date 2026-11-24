@@ -3,6 +3,68 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-24
+
+**Summary.** Eight pull requests are open; the newest, #63 (dev 11-23, task 29d), already contains #62, #61, #60, #59, #58, #57 and
+#55, so I started from it. Task 29d is now done, so the next task the dev routine will build (Wed 11-25) is **29e, "phone camera"
+augmentation** (motion blur, focus blur, noise, JPEG compression on training photos). Today I checked 29e's plan line by line against
+the code in the newest torchvision wheel (0.29.2, read from PyPI) and found three things that would bite: (1) `v2.JPEG`, which 29e
+names, runs through `torchvision.io.encode_jpeg/decode_jpeg`, and **torchvision 0.29 deprecated all of its image encoders/decoders**
+("will be removed in a future release", moving to TorchCodec). The notebooks install the newest torchvision, so 29e would be built on
+a part that is on its way out. (2) `v2.GaussianNoise` takes one fixed `sigma`, not a range, so 29e's "sigma drawn from 0.01-0.03"
+cannot be written with that class as described. (3) The `v2.*` random transforms draw from torch's global generator, while
+`train_transform` keeps its own generators and saves them in checkpoints so a resumed run (PR #55) continues identically; 29e does not
+say to join that. **One roadmap change: a refinement of 29e**, no new tasks (five research tasks are still queued). New-model scan:
+no new Apache-2.0 detector or Depth Anything release this week.
+
+### Recommendations
+
+**1. Build 29e on parts that will last and that resume correctly (refines 29e; tiny effort, removes a future break and a resume gap).**
+- JPEG with OpenCV: `cv2.imencode('.jpg', cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, q])`, `cv2.imdecode`,
+  `COLOR_BGR2RGB`, back to float32 0-1. Measured here with OpenCV 5.1: ~10 ms per 960x640 photo (worst case, random noise image), a
+  pure-red image stays red (254, 0, 2). The RGB->BGR step matters because JPEG converts to brightness + colour channels assuming
+  OpenCV's channel order; skipping it would compress the wrong colours. OpenCV is already in `requirements.txt` (Apache-2.0).
+- Noise: draw `sigma` from 0.01-0.03 with the transform's own generator and call `F.gaussian_noise(img, sigma=s, clip=True)`
+  (`torchvision.transforms.v2.functional`); the per-pixel noise itself can come from torch (it is not a "choice").
+- Same for focus blur: draw sigma, call `F.gaussian_blur(img, [5, 5], [s, s])`. Motion blur stays own code (conv2d), as planned.
+- One `random.Random` for all degrade choices, seeded in `apply.reseed` (`value + 2`), saved in `get_state` and restored in
+  `set_state`. Today `get_state` returns a 2-tuple; make the third element optional so older checkpoints still resume.
+- Why here: Alex trains on free Colab, where sessions drop and runs resume from checkpoints (task 23h / PR #55). If degrade choices
+  came from torch's global generator, a resumed run would see different photo damage than the uninterrupted one, quietly breaking the
+  "same seed = same result" property the noise floor (23f) relies on. And if a future torchvision removes `encode_jpeg`, the
+  learning loop would crash in the middle of a retrain, or, with a "skip if missing" guard, silently drop the JPEG effect.
+- Expected gain: no accuracy change by itself; it keeps 29e working on future Colab installs and keeps resumed runs identical.
+  Effort: a few lines different from the current plan + 3 tests. Risk: very low. Licence: OpenCV Apache-2.0, torchvision BSD-3.
+
+### Considered but not recommended
+- **Realistic sensor noise (Poisson-Gaussian "shot noise", noise that grows with brightness; 2025-26 low-light papers report big
+  gains in the dark):** those gains are for really dark scenes and usually RAW images; Alex films indoor rooms on a phone that already
+  denoises. Plain Gaussian noise is enough as a first try; revisit only if 29e's own-footage numbers show dim rooms are the problem.
+- **Chaining effects in camera order (blur -> noise -> JPEG, as super-resolution training does) instead of one effect:** more realistic
+  but harder to judge which part helps; 29e's one-at-a-time design with a stress score is the better first experiment.
+- **Moving image decoding to TorchCodec:** the project reads photos with OpenCV/PIL, not `torchvision.io` (checked), so the
+  deprecation affects only `v2.JPEG`.
+- **Depth Anything 3 Metric-Large (Apache-2.0):** already looked at on 10-19 (too big next to the detector on a free GPU); still no
+  small metric version. DA3 Small/Base remain Alex's choice to try (see "For Alex to decide").
+- **New detectors:** nothing new under Apache-2.0 this week (RF-DETR N-L Apache-2.0, its XL/2XL under a different licence; YOLOX and
+  PP-PicoDet are older permissive options, weaker than our Faster R-CNN setup is likely to need). No reason to change Alex's choice.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: 29h and 29i before your first real walk (11-21, 11-22), OWLv2 "text + examples" after
+  29f/29g (11-20), RF-DETR / DEIMv2 (10-16), Depth Anything V3 Small vs V2 Small (10-19), SAM 3 as a third labeller (11-07).
+
+### Sources
+- torchvision 0.29.2 wheel from PyPI (read `transforms/v2/_augment.py` `JPEG`, `functional/_augment.py` `jpeg_image`,
+  `_misc.py` `GaussianNoise`/`GaussianBlur`, `io/image.py` `_DEPRECATION_MSG`): https://pypi.org/project/torchvision/0.29.2/
+- torchvision 0.29.0 release notes (image decoders/encoders deprecated, TorchCodec): https://newreleases.io/project/github/pytorch/vision/release/v0.29.0
+- Repo code: `claudeknows/detector.py` (`train_transform`, `reseed`/`get_state`/`set_state`, checkpoint `transform_rng`), ROADMAP 29e.
+- Motion blur and detectors (Sayed & Brostow, CVPR 2021): https://openaccess.thecvf.com/content/CVPR2021/papers/Sayed_Improved_Handling_of_Motion_Blur_in_Online_Object_Detection_CVPR_2021_paper.pdf
+- Low-light synthetic pipeline with detection gains (2025): https://arxiv.org/abs/2504.12169 ; RAW Poisson-Gaussian augmentation for
+  pedestrian detection (2026): https://arxiv.org/abs/2605.22455
+- Depth Anything 3 model licences: https://github.com/ByteDance-Seed/Depth-Anything-3
+- RF-DETR licences by size (JetBrains, Jul 2026): https://blog.jetbrains.com/pycharm/2026/07/best-object-detection-models-for-machine-learning-in-2026/
+- YOLOX-Nano swap from AGPL YOLO11n (example of the licence issue): https://github.com/angweij1431/EIU_Licenseplatedetector/releases/tag/v0.2.0
+
 ## 2026-11-23
 
 **Summary.** Six pull requests are open; the newest, #61 (research 11-22), already contains #60, #59, #58, #57 and #55, so I
