@@ -85,7 +85,97 @@ def zoom_crop(img, target, rng, tries=10, keep=0.6):
     return img, target
 
 
-def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1, zoom_p=0.0, seed=0):
+# ------------------------------------------- "phone camera" effects (task 29e)
+
+# Chance of each effect when a photo is degraded (one effect per photo).
+DEGRADE_EFFECTS = (("motion blur", 0.4), ("focus blur", 0.2), ("noise", 0.2), ("compression", 0.2))
+STRESS_BLUR = 0.01  # the report's "stress" line: motion blur 1% of the photo's short side
+
+
+def motion_blur(img, length, angle):
+    """Blur a float CxHxW image along a straight line through the centre.
+
+    `length` in pixels, `angle` in degrees (0 = left-right, 90 = up-down). The kernel is a
+    1-px line summing to 1; edges are reflect-padded, so the image keeps its size."""
+    length = max(1, int(round(length)))
+    if length < 2:
+        return img
+    k = length if length % 2 else length + 1
+    c = k // 2
+    kernel = torch.zeros(k, k)
+    a = math.radians(angle)
+    for t in torch.linspace(-(length - 1) / 2, (length - 1) / 2, 4 * length).tolist():
+        kernel[int(round(c - t * math.sin(a))), int(round(c + t * math.cos(a)))] = 1.0
+    kernel /= kernel.sum()
+    ch = img.shape[0]
+    x = torch.nn.functional.pad(img[None], (c, c, c, c), mode="reflect")
+    w = kernel.to(img.dtype).expand(ch, 1, k, k)
+    return torch.nn.functional.conv2d(x, w, groups=ch)[0].clamp(0, 1)
+
+
+def jpeg_roundtrip(img, quality):
+    """Save as JPEG at `quality` and load again (OpenCV; float 0-1 RGB in, float32 0-1 RGB out)."""
+    import cv2
+    import numpy as np
+    rgb = (img.clamp(0, 1).permute(1, 2, 0).numpy() * 255.0 + 0.5).astype(np.uint8)
+    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+                           [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+    if not ok:
+        return img
+    back = cv2.cvtColor(cv2.imdecode(buf, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+    return torch.from_numpy(back.astype(np.float32) / 255.0).permute(2, 0, 1).contiguous()
+
+
+def available_effects():
+    """Names of the effects the installed libraries support (an effect without one is skipped)."""
+    from torchvision.transforms.v2 import functional as F
+    have = {"motion blur": True, "focus blur": hasattr(F, "gaussian_blur"), "noise": True}
+    try:
+        import cv2  # noqa: F401
+        have["compression"] = True
+    except ImportError:
+        have["compression"] = False
+    return [name for name, _ in DEGRADE_EFFECTS if have[name]]
+
+
+def degrade(img, rng, effects=None):
+    """Apply ONE randomly chosen phone-camera effect to a float CxHxW image in 0-1.
+
+    Every random choice comes from `rng` (a `random.Random`), so a seeded or restored
+    generator gives the same result. Returns (image, effect name). Boxes are never touched."""
+    from torchvision.transforms.v2 import functional as F
+    effects = available_effects() if effects is None else effects
+    weights = dict(DEGRADE_EFFECTS)
+    if not effects:
+        return img, None
+    name = rng.choices(effects, weights=[weights[e] for e in effects])[0]
+    short = min(img.shape[-2:])
+    if name == "motion blur":
+        out = motion_blur(img, rng.uniform(0.005, 0.015) * short, rng.uniform(0, 180))
+    elif name == "focus blur":
+        s = rng.uniform(0.3, 1.2)
+        out = F.gaussian_blur(img, kernel_size=[5, 5], sigma=[s, s])
+    elif name == "noise":
+        s = rng.uniform(0.01, 0.03)
+        g = torch.Generator().manual_seed(rng.getrandbits(63))
+        out = (img + s * torch.randn(img.shape, generator=g, dtype=img.dtype)).clamp(0, 1)
+    else:
+        out = jpeg_roundtrip(img, rng.randint(30, 75))
+    return out.to(img.dtype), name
+
+
+def stress_image(pil, index):
+    """The report's fixed "stress" version of a test photo: motion blur of 1% of the short
+    side at an angle seeded by the photo's position in the test list (same every run)."""
+    import numpy as np
+    x = torch.from_numpy(np.asarray(pil.convert("RGB"), dtype=np.float32) / 255.0).permute(2, 0, 1)
+    angle = random.Random(index).uniform(0, 180)
+    y = motion_blur(x, STRESS_BLUR * min(x.shape[-2:]), angle)
+    return Image.fromarray((y.permute(1, 2, 0).numpy() * 255.0 + 0.5).astype(np.uint8))
+
+
+def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1, zoom_p=0.0, seed=0,
+                    degrade_p=0.0, log=print):
     """Random flip, small rotation, exact 90-degree turns, zoom in/out, shift, perspective, colour.
 
     Small tilts only (`rot_degrees`, default 8): boxes get looser as the tilt grows, which
@@ -98,8 +188,14 @@ def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1, zo
     are dropped. `composite` (a `CompositePaste`) runs first and adds pasted objects.
     With chance `zoom_p` (default 0 = off) a zoomed window around at least one box is cut out
     first (`zoom_crop`), so objects look like they do inside a test-time tile.
+    With chance `degrade_p` (default 0 = off) ONE "phone camera" effect is applied last
+    (motion blur, focus blur, noise or JPEG compression; `degrade`), pixels only.
     """
     zoom_rng = random.Random(seed)
+    degrade_rng = random.Random(seed + 2)
+    effects = available_effects() if degrade_p > 0 else []
+    if degrade_p > 0:
+        log(f"phone-camera effects on {degrade_p:.0%} of training photos: {', '.join(effects) or 'none available'}")
     t = v2.Compose([
         v2.RandomHorizontalFlip(),
         v2.RandomVerticalFlip(p=vflip_p),
@@ -127,22 +223,29 @@ def train_transform(composite=None, rot_degrees=8, rot90_p=0.15, vflip_p=0.1, zo
         img, out = t(tv_tensors.Image(img), {"boxes": boxes, "labels": tl})
         if empty:
             out = {"boxes": out["boxes"][:0], "labels": out["labels"][:0]}
-        return img.as_subclass(torch.Tensor), {"boxes": out["boxes"].as_subclass(torch.Tensor),
+        img = img.as_subclass(torch.Tensor)
+        if degrade_p > 0 and degrade_rng.random() < degrade_p:
+            img = degrade(img, degrade_rng, effects)[0]
+        return img, {"boxes": out["boxes"].as_subclass(torch.Tensor),
                                                "labels": out["labels"]}
 
     def reseed(value):
         """Restart the transform's own random generators (data-loader workers call this)."""
         zoom_rng.seed(value)
+        degrade_rng.seed(value + 2)
         if composite is not None and hasattr(composite, "rng"):
             composite.rng.seed(value + 1)
 
     def get_state():
-        return (zoom_rng.getstate(), composite.rng.getstate() if hasattr(composite, "rng") else None)
+        return (zoom_rng.getstate(), composite.rng.getstate() if hasattr(composite, "rng") else None,
+                degrade_rng.getstate())
 
     def set_state(state):
         zoom_rng.setstate(state[0])
         if state[1] is not None:
             composite.rng.setstate(state[1])
+        if len(state) > 2:  # resume files saved before task 29e have no degrade entry
+            degrade_rng.setstate(state[2])
     apply.reseed, apply.get_state, apply.set_state = reseed, get_state, set_state
     return apply
 
@@ -177,7 +280,7 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                    patience=4, warmup=200, grad_clip=10.0, stats=None, composite=0.0,
                    rot_degrees=8, rot90_p=0.15, negatives=None, neg_frac=0.15,
                    zoom_crop_p=0.0, ema_decay=0.0, resume_path=None, workers=0,
-                   gold=None, init_state=None, keep_resume=False):
+                   gold=None, init_state=None, keep_resume=False, degrade_p=0.0):
     """Train on samples from `scan_detection`. Returns (model, history of train loss).
 
     Recipe (RESEARCH.md): SGD with lr 0.005 x batch/8 unless `lr` is given, linear
@@ -201,6 +304,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
     the training, validation or background photos.
     `keep_resume`: leave the resume file in place after a normal finish, for a caller that
     deletes it only once the model is safely saved (so a crash after training loses nothing).
+    `degrade_p`: chance of one "phone camera" effect (blur, noise, JPEG) per training photo
+    (task 29e; 0 = off). Training photos only, never validation, test or gold.
     `init_state`: start from these weights (a state dict, e.g. the current model's) instead of
     the freshly built model; None = fresh start (COCO weights when `pretrained`).
     """
@@ -215,7 +320,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
         model.load_state_dict(init_state)
     model = model.to(device)
     paste = CompositePaste(crop_pool(train_samples), composite, seed=seed) if composite > 0 else None
-    transform = train_transform(paste, rot_degrees, rot90_p, zoom_p=zoom_crop_p, seed=seed)
+    transform = train_transform(paste, rot_degrees, rot90_p, zoom_p=zoom_crop_p, seed=seed,
+                                degrade_p=degrade_p, log=log)
     negatives = list(negatives or [])
     n_neg = min(len(negatives), round(len(train_samples) * neg_frac / (1 - neg_frac)))
     rng = random.Random(seed)
@@ -247,6 +353,8 @@ def train_detector(train_samples, epochs=10, batch_size=4, lr=None, pretrained=T
                     rot_degrees=rot_degrees, rot90_p=rot90_p, neg_frac=neg_frac, zoom=zoom_crop_p,
                     ema=ema_decay, max_batches=max_batches, n_train=len(train_samples),
                     n_neg=len(negatives), warmup=warmup)
+    if degrade_p:  # only added when used, so older resume files still match
+        settings["degrade_p"] = degrade_p
     if init_state is not None:  # only added when used, so older resume files still match
         settings["init"] = "given"
     start = 0
@@ -507,13 +615,15 @@ def average_precision(images, label, keep=lambda box, sample: True, iou_thresh=0
     return ap
 
 
-def predict_samples(model, samples, min_score=0.05, tta=None):
+def predict_samples(model, samples, min_score=0.05, tta=None, stress=False):
     """Run the detector on test samples. Returns [(sample, gt, preds)] for `average_precision`.
 
-    `tta` is None (plain), "flip" (original + mirror + 1.3x) or "tiles" (also 4 tiles)."""
+    `tta` is None (plain), "flip" (original + mirror + 1.3x) or "tiles" (also 4 tiles).
+    `stress`: score a fixed motion-blurred copy of each photo instead (`stress_image`)."""
     out = []
-    for s in samples:
-        with Image.open(s.path) as im:
+    for i, s in enumerate(samples):
+        with Image.open(s.path) as raw:
+            im = stress_image(raw, i) if stress else raw
             found = (detect_tta(model, im, min_score=min_score, tiles=(tta == "tiles"))
                      if tta else detect(model, im, min_score=min_score))
         out.append((s, list(s.boxes), [(f["label"], f["score"], f["box"]) for f in found]))
@@ -741,6 +851,61 @@ def format_report(report, ci=None, false_alarms=None, test_scenes=None):
     return "\n".join(lines).lstrip()
 
 
+def format_stress(sharp, stressed, classes=OBJECT_NAMES):
+    """The report's "stress" line (task 29e): mAP on fixed motion-blurred copies of the test
+    photos, and, when `sharp` (plain results on the same photos) is given, the paired difference."""
+    ap = build_report(stressed, classes)["overall"]["all"][0]
+    if ap is None:
+        return "\nstress (motion-blurred test photos): no boxes to score"
+    line = (f"\nstress (test photos with a fixed motion blur, {STRESS_BLUR:.0%} of the short side): "
+            f"mAP {100 * ap:.1f}%")
+    if sharp is not None:
+        diff, (lo, hi), word = compare_runs(sharp, stressed, classes)
+        line += f", {100 * diff:+.1f} points vs sharp (range {100 * lo:+.1f} to {100 * hi:+.1f}: {word})"
+    return line
+
+
+def degrade_decision(val_ab, own_ab=None, stress_ab=None):
+    """Task 29e: keep the phone-camera effects on only if validation mAP does not drop (lower end
+    of the paired range above -0.01) AND own footage or the stress test clearly improves.
+    Each argument is (difference, (low, high), verdict) from `compare_runs`, or None."""
+    if val_ab is None:
+        return False, "no validation boxes to compare on: keep --degrade-p 0"
+    if val_ab[1][0] <= -0.01:
+        return False, "validation mAP may drop: keep --degrade-p 0"
+    gains = [n for n, ab in (("your footage", own_ab), ("stress test", stress_ab))
+             if ab is not None and ab[2] == "helped"]
+    if not gains:
+        return False, "no clear gain on your footage or the stress test: keep --degrade-p 0"
+    return True, f"validation holds and {' and '.join(gains)} improved: turn it on (--degrade-p 0.3)"
+
+
+def compare_checkpoints(a_path, b_path, val, test, classes=OBJECT_NAMES):
+    """Paired A/B of two saved detectors (A = without, B = with phone-camera effects):
+    validation mAP, your footage in the test set, and the stress (motion-blur) test.
+    Returns the printable lines."""
+    a, _ = load_detector(a_path)
+    b, _ = load_detector(b_path)
+
+    def ab(samples, **kw):
+        if not samples:
+            return None
+        ra, rb = predict_samples(a, samples, **kw), predict_samples(b, samples, **kw)
+        try:
+            return compare_runs(ra, rb, classes)
+        except (TypeError, ValueError):  # no boxes to score
+            return None
+    own = [x for x in test if x.source == "own"]
+    rows = (("validation", ab(val)), ("your footage (test)", ab(own)),
+            ("stress test (motion blur)", ab(test, stress=True)))
+    lines = [f"B ({b_path}) minus A ({a_path}), mAP@0.5 points:"]
+    for name, r in rows:
+        lines.append(f"  {name:<28}" + ("no boxes" if r is None else
+                     f"{100 * r[0]:+.1f}  (range {100 * r[1][0]:+.1f} to {100 * r[1][1]:+.1f}: {r[2]})"))
+    lines.append(degrade_decision(*(r for _, r in rows))[1])
+    return lines
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -763,6 +928,8 @@ def main(argv=None):
                    help="largest share of each epoch that is background-only photos (0 = none)")
     t.add_argument("--zoom-crop-p", type=float, default=0.0,
                    help="chance of training on a zoomed window around a box (pairs with --tta tiles)")
+    t.add_argument("--degrade-p", type=float, default=0.0,
+                   help="chance of one phone-camera effect (blur, noise, JPEG) per training photo, e.g. 0.3 (0 = off)")
     t.add_argument("--ema-decay", type=float, default=0.0,
                    help="moving average of the weights, e.g. 0.995 (0 = off)")
     t.add_argument("--resume", default=None, metavar="PATH",
@@ -781,6 +948,12 @@ def main(argv=None):
     r.add_argument("--checkpoint", default="detector.pt")
     r.add_argument("--tta", choices=["flip", "tiles"], default=None,
                    help="test-time augmentation: flip = mirror + 1.3x, tiles = also 4 zoomed tiles")
+    c = sub.add_parser("compare", help="paired A/B of two checkpoints (task 29e: --degrade-p 0 vs 0.3)")
+    c.add_argument("--root", default="data/detection")
+    c.add_argument("--gold-dir", default=None)
+    c.add_argument("--a", required=True, help="checkpoint trained WITHOUT the change")
+    c.add_argument("--b", required=True, help="checkpoint trained WITH the change")
+    c.add_argument("--val-frac", type=float, default=0.15, help="same as used in train")
     a = p.parse_args(argv)
     samples, pending = scan_detection(a.root)
     from .gold import default_gold_dir, gold_samples, load_gold, remove_gold, verify_gold
@@ -791,6 +964,10 @@ def main(argv=None):
     scenes = scene_groups(samples)
     train, test = split_detection(samples, scenes=scenes, min_own_test=1)
     negs_train, negs_test = split_detection(scan_negatives(a.root))
+    if a.cmd == "compare":
+        val = split_detection(train, a.val_frac, scenes=scenes)[1] if a.val_frac > 0 else []
+        print("\n".join(compare_checkpoints(a.a, a.b, val, test)))
+        return
     if a.cmd == "train":
         fit, val = (split_detection(train, a.val_frac, scenes=scenes) if a.val_frac > 0
                     else (train, []))
@@ -802,7 +979,8 @@ def main(argv=None):
                                      negatives=negs_train if a.neg_frac > 0 else None,
                                      neg_frac=a.neg_frac, zoom_crop_p=a.zoom_crop_p,
                                      ema_decay=a.ema_decay, resume_path=a.resume,
-                                     workers=a.workers, gold=gold, keep_resume=True)
+                                     workers=a.workers, gold=gold, keep_resume=True,
+                                     degrade_p=a.degrade_p)
         cuts = best_thresholds(model, val) if val else {}
         if cuts:
             print(format_cutoffs(cutoff_table(predict_samples(model, val, 0.05), cuts=cuts)))
@@ -818,6 +996,8 @@ def main(argv=None):
         n_scenes = len({scenes[x.group] for x in test if x.source == "own"}) or None
         print(format_report(build_report(results, classes), bootstrap_ci(results, classes),
                             alarms, n_scenes))
+        print(format_stress(results if not a.tta else None, predict_samples(model, test, stress=True),
+                            classes))
         if saved:
             print(format_cutoffs(cutoff_table(results, classes, cuts=saved)) +
                   "\n(precision/recall on the test set at those cut-offs)")

@@ -381,6 +381,8 @@ def recipe_of(train_kwargs, pretrained=True, training_set=None):
     keys = ("epochs", "batch_size", "lr", "composite", "rot_degrees", "rot90_p", "neg_frac",
             "zoom_crop_p", "ema_decay", "patience", "max_batches")
     recipe = {"pretrained": pretrained, **{k: train_kwargs.get(k) for k in keys}}
+    if train_kwargs.get("degrade_p"):  # task 29e; only when on, so older floors stay valid
+        recipe["degrade_p"] = train_kwargs["degrade_p"]
     if training_set:
         recipe["training_set"] = training_set
     return recipe

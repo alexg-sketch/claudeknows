@@ -1,5 +1,43 @@
 # Progress log
 
+## 2026-11-25
+**This includes everything from PRs #55, #57, #58, #59, #60, #61, #62, #63, #64 and #65.** Merging this one is enough;
+the others will close automatically. (#65, the newest research PR, already contained all the others, so today's branch
+started from it.) `main` already contains everything the roadmap marked as done before #55; the rest (29c, 29d and the
+11-19 resume fix) comes in with this PR.
+
+**Done: task 29e, "phone camera" effects for training** (with the 11-24 research refinements)
+- Why: walk videos from a phone are blurry when you move, compressed, and grainy in dim rooms. The training photos are
+  mostly sharp internet photos, so the model never practised on that kind of picture.
+- What it does: with a chosen chance per training photo (`--degrade-p`, e.g. 0.3) it applies ONE of these, picked at
+  random: motion blur (a streak 0.5-1.5% of the photo's short side, any direction; 40% of the time), slight focus blur
+  (20%), grain/noise (20%) or heavy JPEG compression (20%). The boxes do not move. Only training photos; never
+  validation, test or the gold set.
+- **It is OFF by default** (`--degrade-p 0`). Nothing changes in any notebook run unless it is turned on.
+- How we decide whether to keep it: the spatial notebook has a new optional step **6c**. It trains a second model with
+  the effects on and runs `detector compare`, which compares the two photo by photo (the same paired method as before) on
+  (1) validation photos, (2) your own footage in the test set and (3) a new "stress test": the test photos again with a
+  fixed motion blur. Its last line says plainly whether to turn it on: only if validation does not get worse AND your
+  footage or the stress test clearly improves. Every `detector report` now also prints the stress line.
+- Built to last: JPEG uses OpenCV (torchvision's JPEG tool is being removed), and all random choices come from the
+  transform's own saved random generator, so a training run that resumes after a Colab disconnect continues exactly.
+  Older resume files still work.
+- If it is ever turned on in the learning loop, it becomes part of the training "recipe", so the noise floor is measured
+  again automatically. While it is off, the saved noise floor stays valid.
+- Code: `detector.motion_blur`, `jpeg_roundtrip`, `degrade`, `stress_image`, `format_stress`, `compare_checkpoints`,
+  `degrade_decision`; `train_transform(degrade_p=...)`, `train_detector(degrade_p=...)`, `--degrade-p`, new
+  `detector compare` command; `retrain.recipe_of`. No new library. 20 new tests; all 191 tests pass.
+
+**Next:** 29f (how good the two labellers are, measured on the gold set; report only), then 29g, 29h, 29i, 29j.
+
+**Authorship check:** all commits on `main` and on this branch are by Claude or Alex (GitHub web merges as committer).
+
+**For Alex to decide:**
+- Optional: next time you run the spatial notebook, step 6c tries the phone-camera effects (it adds one extra
+  training, so roughly doubles the time of that run). Tell me if you'd rather skip it for now.
+- Still open from 11-23: should 29h (failed notebook steps stop "Run all") and 29i (sharper walk frames) jump ahead of
+  29f/29g? Research recommends them before your first real walk. If you say nothing, I keep roadmap order.
+
 ## 2026-11-23
 **This includes everything from PRs #55, #57, #58, #59, #60, #61 and #62.** Merging this one is enough; the others will
 close automatically. (#62, the newest research PR, already contained all the others, so today's branch started from it.)
