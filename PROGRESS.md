@@ -28,6 +28,11 @@ started from it.) `main` already contains everything the roadmap marked as done 
   `degrade_decision`; `train_transform(degrade_p=...)`, `train_detector(degrade_p=...)`, `--degrade-p`, new
   `detector compare` command; `retrain.recipe_of`. No new library. 20 new tests; all 191 tests pass.
 
+**Review note (2026-11-25):** in `spatial_colab.ipynb` the optional experiments 6b and 6c now run only when
+`RUN_EXPERIMENTS = True` (step 5, default `False`). Each is a whole extra training (about 45-60 minutes), and step 8
+saves the model to Drive only after them, so with both on by default "Run all" took about three times as long and
+a disconnect during an experiment lost the main model. Keep new experiments behind this switch.
+
 **Next:** 29f (how good the two labellers are, measured on the gold set; report only), then 29g, 29h, 29i, 29j.
 
 **Authorship check:** all commits on `main` and on this branch are by Claude or Alex (GitHub web merges as committer).
