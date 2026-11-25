@@ -3,6 +3,74 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-25
+
+**Summary.** Nine pull requests are open; the newest, #64 (research 11-24), already contains #63, #62, #61, #60, #59, #58, #57 and
+#55, so I started from it. The dev routine builds 29e today. New-model scan: still no new Apache-2.0 detector (RF-DETR Nano-Large
+stays the open option; YOLO26 AGPL-3.0) and no new Depth Anything release (DA3, Nov 2025, is newest; its only metric model is Large);
+nothing changes Alex's choices. So today I read the walk self-labelling code against the newest `transformers` (5.24.1, read from the
+PyPI wheel) and found a real gap: **OWLv2's duplicate boxes are removed for the training photos but not for walk frames.** OWLv2
+predicts one box per image patch, so one object usually gets several overlapping boxes; transformers' text-query post-processing does
+no duplicate removal (only the image-guided version has `nms_threshold`, default 0.3, a sign duplicates are expected). `autobox`
+already runs its own `nms` (IoU 0.5) for Open Images and Alex's footage, but `selflabel.label_walk` hands raw OWLv2 boxes to `agree`.
+**Two roadmap changes:** a new task **29j** (one line of real code plus tests) and a small refinement of **29f** so the labeller check
+scores OWLv2 the way the loop uses it.
+
+### Recommendations
+
+**1. Remove OWLv2 duplicates before the two labellers are compared on walk frames (new task 29j; tiny effort, saves review places and
+training frames).**
+- What happens today: `agree` pairs each detector box with at most one OWLv2 box. A second OWLv2 box on the same object is left over
+  and becomes an "only owlv2 saw it" question. 29c links at most one box per frame into a track, so the duplicates form a parallel
+  track: roughly one extra question per object that both labellers already agreed on. Each one (a) uses one of Alex's 20 places,
+  (b) holds its frames back from training until answered (questions over the cap are never answered, so those frames stay out), and
+  (c) if Alex says "yes", adds a near-copy of a box the frame already has. It also inflates `owlv2_only` in `walkstats.json`, which
+  feeds the drift report's agreement rate (task 29), so OWLv2 looks less in agreement than it is.
+- Fix: in `selflabel.agree`, right after the OWLv2 cut-off, `owls = autobox.nms(owls)` (same label, IoU 0.5, best score kept), the
+  exact rule `autobox_folder`/`fill_missing` already use, so walk boxes and training-photo boxes are made the same way. Placing it in
+  `agree` covers the loop, the `selflabel label` command, 29f and 29g in one place. The detector needs nothing: torchvision's Faster
+  R-CNN already removes its own duplicates (per class, IoU 0.5).
+- Why here: the review batch (20 yes/no questions per walk) is Alex's scarcest resource and the main way keys get boxes in his rooms;
+  spending a share of it on duplicates of boxes that are already agreed is pure waste. Alex has no real walks yet, so fixing it now
+  means no old walk labels need redoing.
+- Expected gain: fewer wasted questions and more walk frames reaching training (exact amount unknown until a real walk; the fix is a
+  no-op when OWLv2 gives no duplicates). Effort: ~5 lines + 4 tests. Risk: very low (two genuinely different same-label objects
+  overlapping by more than 50%, e.g. a pair of shoes side by side seen at an angle, could merge; same trade-off the training photos
+  already make). Licence: own code.
+
+**2. Labeller check scores OWLv2 after the same duplicate removal (refines 29f).** If 29f scored raw OWLv2 output, every duplicate
+would count as a wrong box, OWLv2's precision would look far worse than what the loop actually uses, and the "lower keys cut-off"
+suggestion for Alex could point the wrong way. One added phrase in 29f: OWLv2 boxes pass through `autobox.nms` after the cut-off.
+
+### Considered but not recommended
+- **Class-agnostic duplicate removal (merge a "keys" and a "shoes" box on the same spot):** could hide a real labeller confusion that
+  29f should see; keep same-label only, as the training photos do.
+- **Box fusion (average duplicates instead of keeping the best, e.g. `ensemble-boxes` WBF):** slightly tighter boxes in theory, but it
+  would make walk boxes differ from training-photo boxes; not worth it before real walks show box quality is a problem.
+- **2026 self-training papers (sparse-label add-ons to source-free detector adaptation, arXiv 2606.30795; iterative pseudo-labelling
+  for few-shot detection, GiPL, arXiv 2605.29539):** the first reports only small, method-dependent gains from adding a few labelled
+  target images; the second's loop (fine-tune, label, retrain) is what tasks 26-28 already do. Nothing new to add. (arxiv.org could
+  not be opened from this sandbox, so these are judged from abstracts in search results.)
+- **MetricAnything (metric-depth pretraining, Jan 2026):** licence not stated in what I could see, no small checkpoint confirmed;
+  Depth Anything V2 Small stays.
+- **Colab runtime:** no newer runtime listing found than the ones already handled; nothing to change.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: do 29h, 29i (and now 29j) before your first real walk; OWLv2 "text + examples" after
+  29f/29g (11-20); RF-DETR / DEIMv2 (10-16); Depth Anything V3 Small vs V2 Small (10-19); SAM 3 as a third labeller (11-07).
+
+### Sources
+- transformers 5.24.1 wheel from PyPI (`models/owlv2/image_processing_owlv2.py`: `post_process_object_detection` thresholds only;
+  `post_process_image_guided_detection` has `nms_threshold=0.3`; `processing_owlv2.py`): https://pypi.org/project/transformers/
+- Repo code: `claudeknows/autobox.py` (`nms`, `autobox_folder`, `fill_missing`, `owl_detector`), `claudeknows/selflabel.py`
+  (`agree`, `label_walk`, `link_tracks`), `claudeknows/loop.py` (`colab_label_fn`), ROADMAP 29c, 29f, 29g.
+- OWLv2 / OWL-ViT (one box per image patch, Minderer et al.): https://arxiv.org/abs/2306.09683
+- RF-DETR licences: https://raw.githubusercontent.com/roboflow/rf-detr/develop/README.md
+- Depth Anything 3 model table: https://github.com/ByteDance-Seed/Depth-Anything-3 ; MetricAnything: https://arxiv.org/abs/2601.22054
+- Sparse labels for source-free detector adaptation (Jun 2026): https://arxiv.org/abs/2606.30795 ; GiPL (May 2026):
+  https://www.alphaxiv.org/abs/2605.29539
+- Colab past runtime versions: https://research.google.com/colaboratory/runtime-version-faq.html
+
 ## 2026-11-24
 
 **Summary.** Eight pull requests are open; the newest, #63 (dev 11-23, task 29d), already contains #62, #61, #60, #59, #58, #57 and
