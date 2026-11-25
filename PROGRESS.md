@@ -1,5 +1,128 @@
 # Progress log
 
+## 2026-11-25
+**This includes everything from PRs #55, #57, #58, #59, #60, #61, #62, #63, #64 and #65.** Merging this one is enough;
+the others will close automatically. (#65, the newest research PR, already contained all the others, so today's branch
+started from it.) `main` already contains everything the roadmap marked as done before #55; the rest (29c, 29d and the
+11-19 resume fix) comes in with this PR.
+
+**Done: task 29e, "phone camera" effects for training** (with the 11-24 research refinements)
+- Why: walk videos from a phone are blurry when you move, compressed, and grainy in dim rooms. The training photos are
+  mostly sharp internet photos, so the model never practised on that kind of picture.
+- What it does: with a chosen chance per training photo (`--degrade-p`, e.g. 0.3) it applies ONE of these, picked at
+  random: motion blur (a streak 0.5-1.5% of the photo's short side, any direction; 40% of the time), slight focus blur
+  (20%), grain/noise (20%) or heavy JPEG compression (20%). The boxes do not move. Only training photos; never
+  validation, test or the gold set.
+- **It is OFF by default** (`--degrade-p 0`). Nothing changes in any notebook run unless it is turned on.
+- How we decide whether to keep it: the spatial notebook has a new optional step **6c**. It trains a second model with
+  the effects on and runs `detector compare`, which compares the two photo by photo (the same paired method as before) on
+  (1) validation photos, (2) your own footage in the test set and (3) a new "stress test": the test photos again with a
+  fixed motion blur. Its last line says plainly whether to turn it on: only if validation does not get worse AND your
+  footage or the stress test clearly improves. Every `detector report` now also prints the stress line.
+- Built to last: JPEG uses OpenCV (torchvision's JPEG tool is being removed), and all random choices come from the
+  transform's own saved random generator, so a training run that resumes after a Colab disconnect continues exactly.
+  Older resume files still work.
+- If it is ever turned on in the learning loop, it becomes part of the training "recipe", so the noise floor is measured
+  again automatically. While it is off, the saved noise floor stays valid.
+- Code: `detector.motion_blur`, `jpeg_roundtrip`, `degrade`, `stress_image`, `format_stress`, `compare_checkpoints`,
+  `degrade_decision`; `train_transform(degrade_p=...)`, `train_detector(degrade_p=...)`, `--degrade-p`, new
+  `detector compare` command; `retrain.recipe_of`. No new library. 20 new tests; all 191 tests pass.
+
+**Next:** 29f (how good the two labellers are, measured on the gold set; report only), then 29g, 29h, 29i, 29j.
+
+**Authorship check:** all commits on `main` and on this branch are by Claude or Alex (GitHub web merges as committer).
+
+**For Alex to decide:**
+- Optional: next time you run the spatial notebook, step 6c tries the phone-camera effects (it adds one extra
+  training, so roughly doubles the time of that run). Tell me if you'd rather skip it for now.
+- Still open from 11-23: should 29h (failed notebook steps stop "Run all") and 29i (sharper walk frames) jump ahead of
+  29f/29g? Research recommends them before your first real walk. If you say nothing, I keep roadmap order.
+
+## 2026-11-23
+**This includes everything from PRs #55, #57, #58, #59, #60, #61 and #62.** Merging this one is enough; the others will
+close automatically. (#62, the newest research PR, already contained all the others, so today's branch started from it.)
+`main` already contains everything the roadmap marked as done before today.
+
+**Done: task 29d — the original training photos are saved once in Drive and reused** (with the 11-23 research refinement)
+- Before: every time the learning loop retrained, Colab rebuilt the ~1,000 original training photos from scratch: streamed
+  ~5 GB of Open Images files, downloaded the photos again (a timeout quietly swapped in a different photo) and ran OWLv2
+  twice. Slow, and each retrain learned from a slightly different "original" set.
+- Now: the first retrain builds them as before and then saves them in Drive `claudeknows_models/training_set/` as ONE file
+  (`training_set.tar`, roughly 0.2-0.4 GB) plus `manifest.json` (every file with a checksum, counts per object and source,
+  date, code version, and the settings used). Later retrains copy that one file to Colab's disk, check every checksum and
+  skip downloading and OWLv2 completely.
+- It is rebuilt automatically, with the reason in the loop summary, when:
+  - your own photos/videos in `claudeknows_photos/` change (new, removed or changed files; `walks/` does not count),
+    e.g. "training photos rebuilt: your own photos/videos changed (1 new, e.g. keys/b.MOV)";
+  - any setting for how photos, frames or boxes are made changes (number of photos, frames per second, photo size, blur
+    limit, OWLv2 model and thresholds, or `PHOTO_PIPELINE_VERSION`, a number the code bumps when it changes how photos
+    are made). An older manifest missing one of these settings counts as changed, so it rebuilds once;
+  - a saved file is missing or damaged.
+  When reused, the summary says "training photos: snapshot <id> (N photos) reused".
+- Safety: the snapshot is written under a temporary name and renamed at the end, so a Colab disconnect never leaves half
+  a snapshot. A damaged snapshot never replaces the photos on disk; it just triggers a rebuild.
+- Fair comparisons: the snapshot id is now part of the training "recipe", so a new snapshot automatically re-measures the
+  noise floor. Each new model version records which snapshot it was trained on (`training_set`). The first loop retrain
+  says "the current model was trained on a different set of original photos, so this comparison is not yet like-for-like"
+  (true for the model from the spatial notebook).
+- Code: `loop.prepare_training_photos` (now with `snapshot_dir`), new `photo_settings`, `footage_list`, `write_snapshot`,
+  `restore_snapshot`, `PHOTO_PIPELINE_VERSION`; `retrain.recipe_of / retrain / measure_noise_floor / save_version` take the
+  snapshot id. Standard library only. Nothing goes into git. 7 new tests; all 173 tests pass.
+
+**Next:** 29e ("phone camera" blur/noise augmentation), then 29f, 29g, 29h, 29i. Research suggested doing 29h (failed
+notebook steps stop "Run all") and 29i (sharper walk frames at full size) before your first real walk; when 29i is done it
+will bump `PHOTO_PIPELINE_VERSION` so the snapshot rebuilds once with the better frames.
+
+**Authorship check:** all commits on `main` and on this branch are by Claude or Alex (GitHub web merges as committer).
+
+**For Alex to decide:**
+- Should 29h and 29i jump ahead of 29e-29g? Research (11-21, 11-22) recommends them before your first real walk; the
+  roadmap order puts them last. If you say nothing, I keep roadmap order.
+- Nothing changes in how you run the learning-loop notebook. The first retrain after this will take as long as before
+  (it builds and saves the snapshot); later ones start sooner. It uses about 0.2-0.4 GB of your Drive.
+
+## 2026-11-20
+**This includes everything from PRs #55, #57 and #58.** Merging this one is enough; the others will close automatically.
+Everything the roadmap marks as done is already on `main` (checked).
+
+**Done** (roadmap task 29c, from research 2026-11-16): **one question per object, not one per photo.**
+- Before: if only one of the two labellers (say OWLv2) saw a key on the table, and the key was in 6 photos of the walk in
+  a row, you got 6 separate "Is this keys?" questions. They used up 6 of your 20 places per walk.
+- Now: questions about the same object in neighbouring photos are joined into one. Rule: same object, photos at most 2
+  apart in the walk, boxes overlapping (more than 30%), at most 8 photos per question (about 4 seconds of walking) so it
+  cannot slide onto a different object. You see one photo (the one where the labeller was surest) with its box, exactly
+  as before. "Yes" adds the box to every photo in the group (each photo gets its own box); "no" clears them all.
+- The limit of 20 now counts these grouped questions, so the same 20 answers can unlock several times more photos.
+  Each walk's log says how much it helped: "N per-frame questions grouped into M questions".
+- Spot checks of agreed labels (task 29) are never grouped.
+- Risk and guard: one wrong "yes" on a group adds up to 8 wrong boxes. Those boxes are marked `alex-track`, and the
+  drift report now shows the "no" rate of grouped questions on its own line, so we can see if they behave differently.
+- Code: `selflabel.link_tracks` (new), `label_walk`, `apply_answers`; `drift.answered` counts a grouped answer once.
+  8 new tests; 3 older tests now use a moving object so they still test one-question-per-photo cases. All 166 tests pass.
+- Older `review.json` files (from walks labelled before today) still work: a question without a group is treated as one
+  photo.
+
+**Next:** task 29d (keep the original training photos frozen in Drive and reuse them, so retrains are faster and
+fairer), then 29e, 29f, 29g.
+
+**Authorship check:** all commits on `main` and on this branch are by Claude or Alex (GitHub web merges as committer).
+
+**For Alex to decide:** nothing new. When you next run the learning-loop notebook, nothing changes for you except that
+there may be fewer questions. Still open from earlier research: fresh gold photos when the wear warning appears,
+RF-DETR / DEIMv2, Depth Anything V3 Small, SAM 3 as a third labeller.
+
+## 2026-11-19
+**Fix: a broken progress file no longer stops training, and a crash at the end no longer loses a run**
+- Alex's run on 11-18 stopped at the save step with "No such file: detector.pt". The real cause was earlier: training
+  crashed in its first seconds because `resume_detector.pt` in Drive was empty (left from an earlier cut-off run), and a
+  failed `!python` line does not stop Run all, so only the save step showed an error.
+- `train_detector` now moves an unreadable resume file aside to `resume_detector.pt.broken` and starts fresh.
+- The `train` command deletes the resume file only after `detector.pt` is saved (`keep_resume=True`), so a crash in the
+  cut-off step after training can be resumed instantly instead of retraining 60-90 minutes.
+- `spatial_colab.ipynb`: step 5 stops with a plain message if no model was made (and says whether Run all will continue
+  from saved progress); an older `detector.pt` is moved to `detector_previous.pt` first so it can't be mistaken for a new
+  one; step 8 runs from the repo folder and explains a missing model instead of a FileNotFoundError.
+
 ## 2026-11-18
 **This includes everything from PRs #42, #43, #45, #46, #47, #48, #49, #50, #51, #52 and #53.** Merging this one is enough;
 the others will close automatically. It also contains everything already on `main`. Note: tasks 26, 27 and 28 are marked
