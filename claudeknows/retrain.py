@@ -319,8 +319,11 @@ def save_version(model, models_dir, history=(), extra=None, today=None):
         name, i = f"{stem}_{i}.pt", i + 1
     save_detector(model, d / name, history, extra=extra)
     v = load_versions(d)
-    v["all"].append({"name": name, "date": (today or date.today()).isoformat(),
-                     "init": (extra or {}).get("init"), "verdict": None})
+    entry = {"name": name, "date": (today or date.today()).isoformat(),
+             "init": (extra or {}).get("init"), "verdict": None}
+    if (extra or {}).get("training_set"):
+        entry["training_set"] = extra["training_set"]  # which saved original photos (task 29d)
+    v["all"].append(entry)
     _write(d / VERSIONS_FILE, v)
     return name
 
@@ -371,11 +374,18 @@ def rollback(models_dir, log=print):
 
 # ------------------------------------------------------------------ one loop run
 
-def recipe_of(train_kwargs, pretrained=True):
-    """The settings that define "the recipe" for the noise floor (seed excluded)."""
+def recipe_of(train_kwargs, pretrained=True, training_set=None):
+    """The settings that define "the recipe" for the noise floor (seed excluded).
+    `training_set` = id of the saved original training photos (task 29d): new photos are a
+    new recipe, so the noise floor is measured again."""
     keys = ("epochs", "batch_size", "lr", "composite", "rot_degrees", "rot90_p", "neg_frac",
             "zoom_crop_p", "ema_decay", "patience", "max_batches")
-    return {"pretrained": pretrained, **{k: train_kwargs.get(k) for k in keys}}
+    recipe = {"pretrained": pretrained, **{k: train_kwargs.get(k) for k in keys}}
+    if train_kwargs.get("degrade_p"):  # task 29e; only when on, so older floors stay valid
+        recipe["degrade_p"] = train_kwargs["degrade_p"]
+    if training_set:
+        recipe["training_set"] = training_set
+    return recipe
 
 
 def _train(base, extra, seed, init_state, pretrained, gold_manifest, train_kwargs, val_frac, log):
@@ -398,7 +408,7 @@ def _train(base, extra, seed, init_state, pretrained, gold_manifest, train_kwarg
 
 def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="coco", seed=0,
             pretrained=True, val_frac=0.15, train_kwargs=None, gate=None, tta=None, today=None,
-            log=print):
+            training_set=None, log=print):
     """Train one candidate, compare it on the gold set, promote it or not.
 
     `base` = original training photos (gold already removed), `extra` = self-labelled walk
@@ -414,7 +424,8 @@ def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="co
                                              pretrained, gold_manifest, train_kwargs, val_frac, log)
     name = save_version(model, d, hist, today=today, extra={
         "train_stats": stats, "thresholds": cuts, "init": init, "seed": seed,
-        "recipe": recipe_of(train_kwargs, pretrained), "self_labelled": n_self, "trained_on": n_fit})
+        "recipe": recipe_of(train_kwargs, pretrained, training_set), "self_labelled": n_self,
+        "trained_on": n_fit, "training_set": training_set})
     summary = [f"candidate {name}: trained on {n_fit} photos ({n_self} self-labelled), "
                f"started from {'COCO weights (fresh)' if init == 'coco' else 'the current model'}"]
     if stats.get("self_box_usage"):
@@ -435,7 +446,8 @@ def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="co
         summary.append("kept the current model: there is no gold set yet, so nothing can be "
                        "promoted automatically")
         return result
-    floor, _, _, floor_note = noise_progress(d, recipe_of(train_kwargs, pretrained), log=log)
+    floor, _, _, floor_note = noise_progress(d, recipe_of(train_kwargs, pretrained, training_set),
+                                             log=log)
     cur_model, classes = load_detector(current)
     cur_res = predict_samples(cur_model, gold_samps, tta=tta)
     cand_res = predict_samples(model, gold_samps, tta=tta)
@@ -458,7 +470,8 @@ def retrain(base, extra, gold_samps, models_dir, *, gold_manifest=None, init="co
 
 
 def measure_noise_floor(base, gold_samps, models_dir, *, gold_manifest=None, seeds=NOISE_SEEDS,
-                        pretrained=True, val_frac=0.15, train_kwargs=None, train_fn=None, log=print):
+                        pretrained=True, val_frac=0.15, train_kwargs=None, train_fn=None,
+                        training_set=None, log=print):
     """Train the current recipe (fresh start, original photos only) with each seed that is
     still MISSING, score it on the gold set once and save it at once. When all seeds exist
     the floor is 2.5 x their standard deviation. These models are never promotion
@@ -466,7 +479,7 @@ def measure_noise_floor(base, gold_samps, models_dir, *, gold_manifest=None, see
     from .detector import average_precision, predict_samples
     classes = OBJECT_NAMES
     train_kwargs = dict(train_kwargs or {})
-    recipe = {**recipe_of(train_kwargs, pretrained), "seeds": list(seeds)}
+    recipe = {**recipe_of(train_kwargs, pretrained, training_set), "seeds": list(seeds)}
     _, done, missing, _ = noise_progress(models_dir, recipe, seeds, log)
     if done:
         log(f"noise floor: seeds {done} already measured; training {missing or 'none'}")
