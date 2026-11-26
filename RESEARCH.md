@@ -3,6 +3,93 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-26
+
+**Summary.** Eleven pull requests are open; the newest, #66 (dev 11-25, task 29e), already contains #65, #64, #63, #62, #61, #60,
+#59, #58, #57 and #55, so I started from it. 29e is done, so the next task the dev routine builds (Fri 11-27) is **29f, the labeller
+check on the gold set**. Before it is built I read 29f's plan against the gold-set code (`gold.py`, `gold_set.ipynb`, `autobox.py`)
+and found that **part of it would measure nothing**: the gold boxes ARE OWLv2's boxes. Alex's footage is boxed only by OWLv2
+(`autobox_folder`, `by="owlv2"`); frames where OWLv2 found nothing become `rejected` and are never offered as gold
+(`pick_gold_scenes` keeps only frames with boxes); and Alex clicks Yes only when every box is right and none is missing. So the gold
+set holds exactly the photos OWLv2 already got fully right. Re-running OWLv2 on them gives the same boxes, so 29f would print "OWLv2
+finds 100% of your keys, 100% right", and its OWLv2 cut-off table would say lowering the keys cut-off adds only wrong boxes (on these
+photos nothing was missing, so any extra box is wrong by construction): the opposite of the question it was meant to answer. The
+detector and "both agree" numbers are still real, but they are measured only on OWLv2-easy photos, so recall is an upper bound. A
+NeurIPS 2026 paper on detection benchmarks finds the same pattern at large scale: when test labels come from verifying proposals,
+annotators lean toward confirming them and missed objects stay missing, and scores move a lot once labels are made high-recall.
+**Two roadmap changes:** a refinement of **29f** (don't score OWLv2 against its own boxes; get OWLv2's real hit rate from Alex's
+Yes/No answers instead) and a new small task **29k** (the gold notebook records why a photo got No). Whether the gold set should also
+include hard photos (which needs drawing boxes) is a decision for Alex. New-model scan: still no new Apache-2.0 detector or Depth
+Anything release; nothing changes Alex's choices.
+
+### Recommendations
+
+**1. Measure OWLv2 honestly in the labeller check (refines 29f; small effort, stops a misleading report).**
+- The problem, in one line: a labeller scored against its own boxes always looks perfect. OWLv2 drew every gold box (Alex only said
+  yes/no), and frames it got wrong or empty never entered gold.
+- Change to 29f: do NOT print OWLv2 precision/recall or the OWLv2 cut-off table against gold boxes. Instead, an "OWLv2 on your
+  footage" block from Alex's own answers in Drive `claudeknows_models/gold_answers.json`: per object folder, photos OWLv2 got fully
+  right = Yes / (Yes + No), with the `drift.wilson` 95% range and counts (today's file maps name -> true/false; the folder comes from
+  the gold manifest for Yes photos and, for No photos, from `data/detection/own/<folder>/boxes.json` if present, else "unknown";
+  read 29k's richer format when it exists). Add the number of footage frames in those folders that OWLv2 left `rejected` (found
+  nothing at all), when `boxes.json` is available: for keys that is the "OWLv2 misses keys" number 29f was really after.
+- Keep the detector and "both agree" precision/recall on gold, but print the caveat on the block: "measured on photos OWLv2 already
+  got fully right, so real recall on your rooms is probably lower".
+- Why here: 29f exists to show whether keys are being missed. As planned, it would have shown OWLv2 at 100% and pointed Alex away
+  from a lower keys cut-off. The Yes/No answers are already saved and are an independent human judgement of OWLv2 on his rooms,
+  so the honest number costs nothing extra (no OWLv2 run needed for it).
+- Tests (CPU): a fake OWLv2 that returns exactly the gold boxes does not produce a "100%" OWLv2 line (OWLv2 is not scored against
+  gold); 6 Yes + 4 No for keys gives "6 of 10 (60%, range ...)"; old-format answers (bools) and missing folder info work; detector
+  and agreement numbers as already specified; the caveat line is present. Expected gain: no mAP change; a correct picture of where
+  self-labels are weak. Risk: none. Licence: own code.
+
+**2. Record why a gold photo got "No" (new task 29k; small notebook change, gives OWLv2's miss rate separately from its wrong boxes).**
+- What: in `gold_set.ipynb` replace the single No button with "No: a box is wrong" and "No: something has no box" (Yes unchanged;
+  if both apply, the second one). `gold.save_answer` stores `{"ok", "why": "wrong"|"missing"|null, "folder", "scene"}` per name
+  (and `load_answers` still reads old true/false entries). When candidates are offered, also save per folder how many footage frames
+  OWLv2 left `rejected`, in `gold_answers.json` under `"_rejected"`. After freezing, print per object: "OWLv2 got N of M photos fully
+  right; K had a missing object". 29f shows the same numbers.
+- Why here: "something has no box" for keys is the single most useful number for deciding whether a lower OWLv2 keys cut-off (task
+  23m allows it), the "text + examples" queries (29g) or a third labeller is worth trying. One extra button, no new library.
+- Tests (CPU, no widgets): new and old answer formats load; counts per folder and reason are right; frozen gold still contains only
+  Yes photos; `_rejected` key is ignored by everything that lists answers. Risk: very low. Licence: own code.
+
+### Considered but not recommended
+- **Offering OWLv2's lower-scored boxes (e.g. 0.1) on gold candidates so missed keys get a box to confirm:** more boxes to check means
+  more No answers (Alex needs every box right), and it is still OWLv2 choosing what can become gold; the circularity stays.
+- **Adding the current detector's boxes to gold proposals:** it would bias gold toward the model the gate is judging; no.
+- **Soft, multi-annotator gold labels (as in the NeurIPS 2026 benchmark paper):** right for big benchmarks, overkill for one person
+  and ~50 photos.
+- **New detectors / depth models:** nothing new this week (RF-DETR N-L Apache-2.0, XL/2XL under Roboflow's PML licence; YOLO26
+  AGPL-3.0; DEIM/D-FINE Apache-2.0 but older). No reason to revisit Alex's choices.
+
+### For Alex to decide
+- **Should the gold set also include the hard photos?** Today it can only hold photos OWLv2 got completely right, so it never tests
+  the model on keys OWLv2 missed: exactly the case that matters most, and the quality gate cannot see gains or losses there. The fix
+  is a one-time box-drawing step for gold "No" photos (drag a box with the mouse; about 50 photos, maybe 15-20 minutes).
+  `jupyter-bbox-widget` (BSD-3-Clause, v0.7.0 May 2026) does this in a notebook, but I could not confirm it works in Colab (it needs
+  `google.colab.output.enable_custom_widget_manager()`); a fallback is drawing in any image tool and uploading a small file. It changes
+  the "yes/no only" design, and if you have already frozen a gold set it would mean a second gold version, so it is your call.
+- Still open from earlier: 29h, 29i, 29j before your first real walk; OWLv2 "text + examples" after 29f/29g (11-20); RF-DETR / DEIMv2
+  (10-16); Depth Anything V3 Small vs V2 Small (10-19); SAM 3 as a third labeller (11-07).
+
+### Sources
+- Repo code: `claudeknows/gold.py` (`candidates`, `pick_gold_scenes` keeps only boxed, non-pending frames; `save_answer`;
+  `build_gold` manifest with `folder`), `claudeknows/autobox.py` (`autobox_folder`: OWLv2 boxes or `rejected`, `expect` = the
+  folder's object), `notebooks/gold_set.ipynb` (Yes only if every object is boxed and none missing), `claudeknows/selflabel.py`
+  (`agree`), ROADMAP 29f.
+- Object Detection Benchmarks are Incomplete: The Role of Label Errors and Annotation Uncertainty (NeurIPS 2026; high-recall
+  re-annotation changes AP a lot, rankings mostly stable; confirmation bias toward proposed labels): https://arxiv.org/pdf/2609.21822 ,
+  https://neurips.cc/virtual/2026/poster/139282 (both judged from search summaries; arxiv.org and neurips.cc were not reachable from
+  this session)
+- Pre-annotation bias in manual annotation (2023): https://arxiv.org/pdf/2306.09307
+- Noise-aware evaluation of object detectors (WACV 2025): https://openaccess.thecvf.com/content/WACV2025/papers/Llerena_Noise-Aware_Evaluation_of_Object_Detectors_WACV_2025_paper.pdf
+- jupyter-bbox-widget (BSD-3-Clause per PyPI classifier and LICENSE.txt; v0.7.0, 17 May 2026): https://pypi.org/project/jupyter-bbox-widget/ ,
+  https://github.com/gereleth/jupyter-bbox-widget
+- Colab custom widget manager: https://github.com/googlecolab/colab-cdn-widget-manager
+- RF-DETR licences: https://raw.githubusercontent.com/roboflow/rf-detr/HEAD/README.md ; Apache-2.0 detector list:
+  https://roboflow.com/models-by-license/apache-2-0-licensed-object-detection
+
 ## 2026-11-25
 
 **Summary.** Nine pull requests are open; the newest, #64 (research 11-24), already contains #63, #62, #61, #60, #59, #58, #57 and
