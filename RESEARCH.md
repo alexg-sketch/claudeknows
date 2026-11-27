@@ -3,6 +3,74 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-27
+
+**Summary.** Twelve pull requests are open; the newest, #67 (research 11-26), already contains #66, #65, #64, #63, #62, #61, #60,
+#59, #58, #57 and #55, so I started from it. The dev routine builds 29f today. New-model scan: still no new Apache-2.0 detector
+(RF-DETR Nano-Large stays the open option; YOLO26 AGPL-3.0) and no new official Depth Anything release (DA3 Nov 2025; a 6M-parameter
+distilled Depth Anything, DepthART, is reported for ACM MM 2026 but I found no licence or weights). Instead of the labelling code, today
+I read the detector **training schedule** (`detector.train_detector`, `lr_factor`) and found a gap that none of the earlier recipe work
+(23a, 23k, 23n) covers: the cosine learning-rate curve is planned for all `epochs`, and we keep the best-validation epoch, so whenever
+the best epoch comes early its weights were taken while the rate was still high (best epoch 8 of 15 = 50% of the starting rate; epoch
+5 = 80%) and never got the low-rate "settling" phase. A CVPR 2026 detection fine-tuning paper (FT-FSOD, Apache-2.0) builds its recipe
+around exactly this: lower the rate when validation stops improving instead of on a fixed timetable; and the LLM "cool-down" literature
+(Hägele et al. 2024; ICLR 2026 follow-up) shows a short final decay recovers what a full cosine run gets. **One roadmap change:** new
+task **29l**, a short optional cool-down of the kept weights, off by default and judged with the existing `detector compare`.
+
+### Recommendations
+
+**1. Cool down the kept weights when the best epoch came at a high learning rate (new task 29l; small effort, low risk, off by default).**
+- What: after training, if the best epoch ended at more than 10% of the starting rate, reload its weights and train 2 more epochs with
+  the rate falling in a straight line from that epoch's rate to 0; keep the result only if validation mAP is not lower. If the best
+  epoch was already near the end of the cosine curve, nothing happens (zero extra time).
+- Why here: early stopping (patience 4) and "keep the best epoch" are right for a small dataset, but together with a fixed-length
+  cosine they mean the weights we keep can be "mid-flight". This matters most for the learning loop: each retrain gets slightly more
+  data, the best epoch moves around, and an un-settled model scores noisier on gold, which makes the promotion gate (27) and its noise
+  floor less sharp. The fix is standard practice in another form: FT-FSOD (CVPR 2026) uses a plateau scheduler (halve the rate after 3
+  epochs without gain, then continue) for detector fine-tuning on small data; cool-down studies show a short final linear decay to 0
+  matches a full cosine schedule. A cool-down is the smallest change to our loop that gets the same effect without replacing the
+  schedule (which would change every saved noise floor).
+- Expected gain: when it triggers, typically +0.5-2 mAP points in schedule studies (not measured on our data; the paired
+  `detector compare` decides). When it does not trigger: nothing. Effort: ~40 lines + 5 tests. Risk: low; selection on validation is
+  the same kind as choosing the best epoch, and the test and gold sets are never used. Cost: about 2 epochs (~10% of a 15-epoch run) only
+  when it triggers. Licence: own code (torch `LambdaLR`).
+- How to build it: see roadmap 29l (flag `--cooldown-epochs`, default 0; resume-safe; added to the recipe only when > 0 so saved noise
+  floors stay valid; optional notebook experiment 6d behind `RUN_EXPERIMENTS`).
+
+### Considered but not recommended
+- **Replace cosine with `ReduceLROnPlateau` (factor 0.5, patience 3), as FT-FSOD does:** good, but it changes the default recipe for
+  every run and invalidates the measured noise floor; with only ~15 epochs and a noisy small validation set it may also halve too
+  early. The opt-in cool-down gets most of the benefit.
+- **Freeze the backbone first, unfreeze after the first plateau (FT-FSOD's "progressive" stage):** helps true few-shot (10-30 boxes per
+  class); we have hundreds of boxes per object and torchvision already freezes the first backbone layers (default 3 trainable).
+- **"No decay at all" (warmup-stable-only, ICLR 2026):** shown for LLM pre-training before later fine-tuning; our model is the final
+  product, so it is not the same situation.
+- **Plateau-tuned optimiser settings in the cool-down (higher Adam beta2, ICLR 2026 WSD study):** we use SGD; not applicable.
+- **New detectors / depth models:** nothing new (see summary). DepthART (6M distilled Depth Anything): no licence or weights found.
+- **torchvision 0.29 (Oct 2026):** no detection-model deprecations found that affect `fasterrcnn_mobilenet_v3_large_fpn` or the v2
+  transforms we use.
+
+### For Alex to decide
+- Nothing new. Still open from earlier: hard photos in the gold set (11-26); 29h, 29i, 29j before your first real walk; RF-DETR /
+  DEIMv2 (10-16); Depth Anything V3 Small vs V2 Small (10-19); SAM 3 as a third labeller (11-07).
+
+### Sources
+- Repo code: `claudeknows/detector.py` (`lr_factor`: warm-up then cosine to 2% over all planned steps; `train_detector`: patience 4,
+  keeps `best_state`), `claudeknows/retrain.py` (`recipe_of`), `notebooks/spatial_colab.ipynb` (`EPOCHS = 15`, `RUN_EXPERIMENTS`).
+- A Closer Look at Cross-Domain Few-Shot Object Detection: Fine-Tuning Matters and Parallel Decoder Helps (CVPR 2026; plateau-aware
+  scheduler, factor 0.5, patience 3/8, progressive unfreezing; code Apache-2.0): https://arxiv.org/abs/2603.28182 ,
+  https://openaccess.thecvf.com/content/CVPR2026/supplemental/Yu_A_Closer_Look_CVPR_2026_supplemental.pdf ,
+  https://raw.githubusercontent.com/Intellindust-AI-Lab/FT-FSOD/main/README.md (the README was read directly; paper details are from
+  search summaries, arxiv.org was not reachable from this session)
+- Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations (Hägele et al., NeurIPS 2024; cool-down matches cosine):
+  https://arxiv.org/abs/2405.18392
+- Training Dynamics of the Cooldown Stage in WSD schedules (ICLR 2026): https://iclr.cc/virtual/2026/poster/10014035
+- Pre-training without LR decay enhances fine-tuning (ICLR 2026): https://arxiv.org/abs/2603.16127
+- How to decay your learning rate (plateau-based decay): https://arxiv.org/abs/2103.12682
+- RF-DETR licences: https://cdn.jsdelivr.net/gh/roboflow/rf-detr@develop/README.md ; YOLO26 (AGPL-3.0):
+  https://playground.roboflow.com/models/ultralytics/yolo26
+- torchvision 0.29.2 listing: https://simple-repository.app.cern.ch/project/torchvision
+
 ## 2026-11-26
 
 **Summary.** Eleven pull requests are open; the newest, #66 (dev 11-25, task 29e), already contains #65, #64, #63, #62, #61, #60,
