@@ -56,7 +56,9 @@ def test_audit_no_removes_box_yes_keeps_it(tmp_path):
 def test_audits_count_toward_cap(tmp_path):
     d = make_walk(tmp_path, n=6)
     det = [[{"label": "water_bottle", "score": 0.9, "box": BOTTLE}] for _ in range(6)]
-    owl = [[("water_bottle", 0.8, BOTTLE), ("keys", 0.9, SHOE)] for _ in range(6)]
+    # the key moves between frames, so 6 separate questions (no track grouping)
+    owl = [[("water_bottle", 0.8, BOTTLE), ("keys", 0.9, (0.1 * i, 0.1, 0.1 * i + 0.08, 0.2))]
+           for i in range(6)]
     stats = sl.label_walk(d, scripted(det), scripted(owl), cut, 0.3, max_questions=5, **QUIET)
     qs = sl.load_questions(d)
     assert len(qs) == 5 and sum(q["why"] == sl.AUDIT for q in qs) == 3
