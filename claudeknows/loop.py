@@ -149,12 +149,14 @@ def question_text(q):
 
 def run_loop(walks_src, models_dir, *, label_fn=None, retrain_fn=None, frames_dir=None,
              import_fn=None, today=None, min_total=MIN_NEW_BOXES, covered=MEANT_TO_COVER,
-             log=print):
+             labeller_fn=None, log=print):
     """One loop run. Returns {"summary": [lines], "retrained": bool, "result", "questions"}.
 
     label_fn(walk_dir) -> stats auto-labels one walk (Colab: current detector + OWLv2);
     None = no current model, so new walks wait. retrain_fn() -> `retrain.retrain` result
     dict (with "summary"); it reads the trainable walk frames itself.
+    labeller_fn() runs the labeller check on the gold set (task 29f, `colab_labeller_fn`);
+    its lines appear in the drift report. None = skipped.
     """
     from .walks import import_walks
     models_dir = Path(models_dir)
@@ -195,6 +197,11 @@ def run_loop(walks_src, models_dir, *, label_fn=None, retrain_fn=None, frames_di
 
     from .drift import record_run, report
     record_run(models_dir, go, result, today=today)
+    if labeller_fn is not None:
+        try:
+            labeller_fn()
+        except Exception as e:  # a report only: never stop the loop because of it
+            lines.append(f"labeller check skipped: {e}")
     lines += report(frames_dir, models_dir)
     qs = open_questions(frames_dir)
     lines.append(f"{len(qs)} question{'s' if len(qs) != 1 else ''} waiting for you (below); answers "
@@ -217,6 +224,35 @@ def colab_label_fn(checkpoint):
     return lambda d: label_walk(d, lambda im: detect(model, im, classes, min_score=LOW_SCORE), owl,
                                 lambda l: _cut(model, l, None),
                                 loss_fn=lambda im, boxes: review_loss(model, im, boxes, classes))
+
+
+def colab_labeller_fn(models_dir, gold_dir, checkpoint, own_root="data/detection/own", log=print):
+    """labeller_fn for Colab (task 29f): the CURRENT model (after any promotion) and OWLv2
+    on the gold photos. They are loaded only when the gold set or the model changed."""
+    from . import drift, gold
+
+    def run():
+        manifest = gold.load_gold(gold_dir)
+        if manifest is None:
+            log("labeller check: no gold set yet")
+            return []
+        problems = gold.verify_gold(manifest, gold_dir)
+        if problems:
+            log(f"labeller check skipped: the gold set has problems ({problems[0]})")
+            return []
+
+        def make():
+            from .autobox import owl_detector
+            from .detector import _cut, detect, load_detector
+            from .selflabel import LOW_SCORE
+            model, classes = load_detector(checkpoint)
+            return (lambda im: detect(model, im, classes, min_score=LOW_SCORE), owl_detector(),
+                    lambda l: _cut(model, l, None))
+
+        return drift.run_labeller_check(models_dir, manifest, gold.gold_samples(manifest, gold_dir),
+                                        drift.file_id(checkpoint), make, own_root=own_root, log=log)
+
+    return run
 
 
 # ------------------------------------------------------------------ original training photos

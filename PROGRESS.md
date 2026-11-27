@@ -1,5 +1,45 @@
 # Progress log
 
+## 2026-11-27
+**This includes everything from PRs #55, #57, #58, #59, #60, #61, #62, #63, #64, #65, #66, #67 and #68.** Merging this
+one is enough; the others will close automatically. (#68, the newest research PR, already contained all the others, so
+today's branch started from it.) `main` already contains everything the roadmap marked as done before #55; the rest
+(29c, 29d, 29e, the 11-19 resume fix, and now 29f) comes in with this PR.
+
+**Done: task 29f, the "labeller check" on the gold set** (with the 11-25 and 11-26 research refinements)
+- Why: the learning loop trusts two "labellers" (the current model and OWLv2). Nobody had measured how good they are on
+  your own rooms, especially whether keys are being missed.
+- What it reports, per object, on your gold photos:
+  - **current model**: precision (how many of its boxes are right) and recall (how many gold boxes it finds), each with a
+    95% range;
+  - **"both agree"** (the rule that makes training labels), the same two numbers, measured photo by photo before the
+    steadiness check.
+  - Fewer than 10 gold boxes of an object: it says "too few gold boxes for <object>" instead of numbers.
+  - A caveat line: these are measured on photos OWLv2 already got fully right, so real recall in your rooms is probably
+    lower.
+- **OWLv2 is deliberately NOT scored against the gold boxes**: OWLv2 drew those boxes and you only kept photos it got
+  right, so it would always look perfect. Instead it shows **"OWLv2 on your footage"** from your Yes/No clicks in the
+  gold-set notebook: per folder, "N of M photos fully right" with a range, plus how many footage frames OWLv2 found
+  nothing in (when that information is on disk). If OWLv2 gets fewer than 70% of a folder right it writes a plain
+  **suggestion** for you (e.g. "a lower OWLv2 cut-off for keys may find more"). It never changes a setting by itself:
+  not the cut-offs, not the agreement rule, not the promotion gate.
+- Where you see it: in the learning-loop summary and `drift_report.txt` in Drive, every run once you have a gold set.
+  The two labellers only run again when the gold set or the current model changed (saved in Drive
+  `claudeknows_models/labeller_check.json`), so normal runs cost no extra time. If the check fails for any reason the
+  loop carries on and says "labeller check skipped: <reason>".
+- Code: `drift.labeller_check`, `match_gold`, `labeller_lines`, `owl_footage`, `owl_footage_lines`,
+  `run_labeller_check`; `loop.colab_labeller_fn`; `run_loop(labeller_fn=...)`; one line in `learning_loop.ipynb`. It
+  already reads the richer answer format planned in 29k (Yes / "a box is wrong" / "something has no box") as well as
+  today's true/false answers. No new library. 14 new tests; all 205 tests pass.
+
+**Next**
+- 29g (OWLv2 "text + examples" queries, off by default), then 29h, 29i, 29j (needed before your first real walk), 29k, 29l.
+
+**For Alex to decide**
+- Nothing blocking. Authorship check: every commit on main and on this branch is by Claude or Alex (GitHub web-merges by
+  "GitHub"), so running the notebooks is fine. The labeller check shows up automatically the next time you run the
+  learning-loop notebook with a gold set in Drive.
+
 ## 2026-11-25
 **This includes everything from PRs #55, #57, #58, #59, #60, #61, #62, #63, #64 and #65.** Merging this one is enough;
 the others will close automatically. (#65, the newest research PR, already contained all the others, so today's branch

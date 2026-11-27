@@ -25,17 +25,25 @@ What it tracks (everything lives in Drive `claudeknows_models/`, never in git):
      when the last 3 walks are each more than 15 points below the median of the
      earlier walks (walks with at least 10 boxes of that object; at least 5 such
      walks needed in total).
+  5. Labeller check on the gold set (task 29f, RESEARCH.md 2026-11-19 and 2026-11-26):
+     precision and recall of the current detector and of the "both agree" rule against
+     the gold boxes, per object, with 95% Wilson ranges. OWLv2 is NOT scored against
+     gold (the gold boxes ARE OWLv2's boxes, so it would look perfect); instead its
+     real hit rate comes from Alex's Yes/No answers in the gold-set notebook. Report
+     only: it never changes a cut-off, the agreement rule or the gate.
 
     python -m claudeknows.drift --walks DRIVE/claudeknows_models/walk_frames --models-dir DRIVE/claudeknows_models
 """
 import argparse
+import hashlib
 import json
 import math
 from datetime import date
 from pathlib import Path
 
+from .autobox import REJECTED, THRESHOLD as OWL_THRESHOLD, cutoff, iou, nms
 from .objects import OBJECT_NAMES
-from .selflabel import load_labels, load_stats, walk_dirs
+from .selflabel import AGREE_IOU, agree, load_labels, load_stats, walk_dirs
 
 HISTORY_FILE = "drift_history.json"
 AUDIT_LOG = "audit.json"
@@ -48,6 +56,11 @@ AGREE_RECENT = 3  # the last 3 walks ...
 AGREE_DROP = 0.15  # ... each more than 15 points below the earlier median
 GOLD_DROP = 0.02  # current model's gold mAP lower than an earlier run's by more than 2 points
 MISSING_RECENT = 3  # an object absent from the last 3 walks' self-labels (but seen before)
+LABELLER_FILE = "labeller_check.json"  # task 29f: cached numbers + the lines shown in the report
+GOLD_ANSWERS = "gold_answers.json"  # Alex's Yes/No clicks in the gold-set notebook
+MIN_GOLD_BOXES = 10  # fewer gold boxes of an object -> "too few gold boxes"
+OWL_SUGGEST = 0.7  # suggest looking at OWLv2 when it got fewer than 70% of a folder's photos right
+OWL_SUGGEST_MIN = 5  # ... with at least this many answers
 
 
 def _read(path, default):
@@ -250,6 +263,196 @@ def gold_lines(history, drop=GOLD_DROP):
     return lines, warns
 
 
+# ------------------------------------------------------------------ labeller check (task 29f)
+
+def match_gold(found, gold_boxes, classes=OBJECT_NAMES, iou_thresh=AGREE_IOU):
+    """found: [(label, score, box)], gold_boxes: [(label, box)] of one photo.
+    Highest score first, each proposal takes the unused same-label gold box it overlaps
+    most (IoU >= iou_thresh); each gold box counts once. Returns {object: [hits, proposed, gold]}."""
+    out = {c: [0, 0, 0] for c in classes}
+    for label, _ in gold_boxes:
+        out.setdefault(label, [0, 0, 0])[2] += 1
+    used = set()
+    for label, _, box in sorted(found, key=lambda f: -f[1]):
+        out.setdefault(label, [0, 0, 0])[1] += 1
+        best, best_j = iou_thresh, None
+        for j, (gl, gb) in enumerate(gold_boxes):
+            if j in used or gl != label:
+                continue
+            v = iou(box, gb)
+            if v >= best:
+                best, best_j = v, j
+        if best_j is not None:
+            used.add(best_j)
+            out[label][0] += 1
+    return out
+
+
+def _add(total, part):
+    for k, v in part.items():
+        t = total.setdefault(k, [0, 0, 0])
+        for i in range(3):
+            t[i] += v[i]
+
+
+def labeller_check(gold_samps, det, owl, det_cut, owl_cut=OWL_THRESHOLD, classes=OBJECT_NAMES):
+    """Score the current detector and the agreement rule on the gold photos.
+
+    det(image) -> [{"label", "score", "box"}] (as `detector.detect`; boxes below
+    `det_cut(label)` are dropped here), owl(image, labels) -> [(label, score, box)]
+    (as `autobox.owl_detector`; cut-off `owl_cut` then `autobox.nms`, as in auto-boxing).
+    Agreement = `selflabel.agree`, before the steadiness check (one photo at a time).
+    OWLv2 is only used inside the agreement rule: it drew the gold boxes, so scoring
+    it against them would measure nothing. Nothing is changed (report only).
+    Returns {"photos", "detector": {obj: [hits, proposed, gold]}, "agreement": {...}}."""
+    from PIL import Image
+    res = {"photos": 0, "detector": {c: [0, 0, 0] for c in classes},
+           "agreement": {c: [0, 0, 0] for c in classes}}
+    for s in gold_samps:
+        with Image.open(s.path) as im:
+            im = im.convert("RGB")
+            dets = [d for d in det(im) if d["score"] >= det_cut(d["label"])]
+            owls = nms([f for f in owl(im, list(classes)) if f[1] >= cutoff(owl_cut, f[0])])
+        agreed, _ = agree(dets, owls, det_cut, owl_cut)
+        gold_boxes = [(n, tuple(b)) for n, b in s.boxes]
+        _add(res["detector"], match_gold([(d["label"], d["score"], d["box"]) for d in dets], gold_boxes, classes))
+        _add(res["agreement"], match_gold([(a["label"], a["score"], a["box"]) for a in agreed],
+                                          gold_boxes, classes))
+        res["photos"] += 1
+    return res
+
+
+def _share(k, n):
+    if not n:
+        return "none"
+    p, lo, hi = wilson(k, n)
+    return f"{k} of {n} ({_pct(p)}, range {_pct(lo)}-{_pct(hi)})"
+
+
+def labeller_lines(res, classes=OBJECT_NAMES, min_boxes=MIN_GOLD_BOXES):
+    """Plain lines for the detector / agreement numbers of `labeller_check`."""
+    lines = [f"labeller check on {res['photos']} gold photos (precision = boxes that were right, "
+             "recall = gold boxes found):"]
+    for c in classes:
+        n_gold = res["detector"].get(c, [0, 0, 0])[2]
+        if n_gold < min_boxes:
+            lines.append(f"  {c}: too few gold boxes for {c} ({n_gold}; {min_boxes} needed)")
+            continue
+        for key, name in (("detector", "current detector"),
+                          ("agreement", "both agree (before the steadiness check)")):
+            hits, prop, gold = res[key].get(c, [0, 0, 0])
+            lines.append(f"  {c}, {name}: precision {_share(hits, prop)}; recall {_share(hits, gold)}")
+    lines.append("  note: detector and agreement numbers are measured on photos OWLv2 already got fully "
+                 "right, so real recall on your rooms is probably lower")
+    return lines
+
+
+def _answer(v):
+    """(ok, why, folder) from an old (true/false) or new ({"ok", "why", "folder"}) answer."""
+    if isinstance(v, dict):
+        return bool(v.get("ok")), v.get("why"), v.get("folder")
+    return bool(v), None, None
+
+
+def owl_footage(answers, manifest=None, own_root=None, classes=OBJECT_NAMES):
+    """OWLv2 on Alex's footage, from his gold-set answers: per folder
+    {"yes", "no", "wrong", "missing", "rejected"} (rejected = footage frames OWLv2 found
+    nothing in, None when unknown). The folder of a photo comes from the answer itself
+    (newer format), else the gold manifest (Yes photos), else `own_root/<folder>/boxes.json`,
+    else "unknown". Keys starting with "_" (e.g. "_rejected") are not photos."""
+    from .detection_data import FOLDERS, load_boxes
+    by_manifest = {Path(e["path"]).name: e.get("folder") for e in (manifest or {}).get("images", [])}
+    own = {}
+    if own_root and Path(own_root).is_dir():
+        for f in FOLDERS:
+            for name, e in load_boxes(Path(own_root) / f).items():
+                own.setdefault(f, {})[name] = e
+    by_own = {name: f for f, entries in own.items() for name in entries}
+    out = {}
+    for name, v in sorted(answers.items()):
+        if name.startswith("_"):
+            continue
+        ok, why, folder = _answer(v)
+        folder = folder or by_manifest.get(name) or by_own.get(name) or "unknown"
+        row = out.setdefault(folder, {"yes": 0, "no": 0, "wrong": 0, "missing": 0, "rejected": None})
+        row["yes" if ok else "no"] += 1
+        if not ok and why in ("wrong", "missing"):
+            row[why] += 1
+    saved_rejected = answers.get("_rejected") if isinstance(answers.get("_rejected"), dict) else {}
+    for folder, row in out.items():
+        if folder in own:
+            row["rejected"] = sum(e.get("by") == REJECTED for e in own[folder].values())
+        elif folder in saved_rejected:
+            row["rejected"] = int(saved_rejected[folder])
+    return out
+
+
+def owl_footage_lines(rows, threshold=OWL_THRESHOLD):
+    """(lines, suggestions) for `owl_footage`. Suggestions are for Alex; nothing is changed."""
+    if not rows:
+        return ["OWLv2 on your footage: no gold-set answers found yet"], []
+    lines = ["OWLv2 on your footage (from your Yes/No answers in the gold-set notebook; photos it got "
+             "fully right = every box right, none missing):"]
+    sugg = []
+    for folder, r in sorted(rows.items()):
+        n = r["yes"] + r["no"]
+        line = f"  {folder}: {_share(r['yes'], n)} photos fully right"
+        if r["wrong"] or r["missing"]:
+            line += f"; {r['wrong']} had a wrong box, {r['missing']} had an object with no box"
+        if r["rejected"] is not None:
+            line += f"; {r['rejected']} footage frames where OWLv2 found nothing"
+        lines.append(line)
+        if n >= OWL_SUGGEST_MIN and r["yes"] / n < OWL_SUGGEST:
+            obj = folder if folder in OBJECT_NAMES else None
+            if obj and r["missing"] > r["wrong"]:
+                sugg.append(f"suggestion: OWLv2 often leaves {obj} without a box; a lower OWLv2 cut-off "
+                            f"for {obj} (autobox.THRESHOLD, now {cutoff(threshold, obj)}) may find more. "
+                            "Your decision; nothing was changed")
+            else:
+                sugg.append(f"suggestion: OWLv2 got only {_pct(r['yes'] / n)} of your {folder} photos fully "
+                            "right; look at that folder's contact sheet before trusting its boxes. "
+                            "Nothing was changed")
+    return lines, sugg
+
+
+def gold_id(manifest):
+    """Short id of a gold set: changes if any gold file changes."""
+    h = hashlib.sha256("\n".join(sorted(e["sha256"] for e in manifest["images"])).encode())
+    return h.hexdigest()[:12]
+
+
+def file_id(path):
+    from .gold import file_hash
+    return file_hash(path)[:12]
+
+
+def run_labeller_check(models_dir, manifest, gold_samps, detector_id, make_labellers,
+                       own_root=None, extra_id=None, classes=OBJECT_NAMES, log=print):
+    """Labeller check with a cache (Drive `labeller_check.json`): the labellers run only when
+    the gold set, the detector version (or `extra_id`, e.g. OWLv2 queries) changed.
+    make_labellers() -> (det, owl, det_cut). The OWLv2-on-footage block is rebuilt every time
+    from `gold_answers.json` (cheap). Saves and returns the report lines."""
+    models_dir = Path(models_dir)
+    path = models_dir / LABELLER_FILE
+    old = _read(path, {})
+    key = {"gold": gold_id(manifest), "detector": detector_id, "extra": extra_id}
+    if old.get("key") == key and old.get("result"):
+        res = old["result"]
+        log("labeller check: gold set and detector unchanged, reusing the saved numbers")
+    else:
+        det, owl, det_cut = make_labellers()
+        res = labeller_check(gold_samps, det, owl, det_cut, classes=classes)
+    lines = labeller_lines(res, classes)
+    o_lines, sugg = owl_footage_lines(owl_footage(_read(models_dir / GOLD_ANSWERS, {}), manifest, own_root, classes))
+    lines += o_lines + sugg
+    _write(path, {"key": key, "date": date.today().isoformat(), "result": res, "lines": lines})
+    return lines
+
+
+def saved_labeller_lines(models_dir):
+    return _read(Path(models_dir) / LABELLER_FILE, {}).get("lines") or []
+
+
 # ------------------------------------------------------------------ the report
 
 def report(walks_root, models_dir, classes=OBJECT_NAMES):
@@ -282,6 +485,7 @@ def report(walks_root, models_dir, classes=OBJECT_NAMES):
         lines.append("self-labelled boxes in trainable photos, last walks:")
         for w, c in counts[-5:]:
             lines.append(f"  {w}: " + ", ".join(f"{k} {c.get(k, 0)}" for k in classes))
+    lines += saved_labeller_lines(models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
     (models_dir / REPORT_FILE).write_text("\n".join(lines) + "\n")
     return lines
