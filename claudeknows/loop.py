@@ -149,12 +149,14 @@ def question_text(q):
 
 def run_loop(walks_src, models_dir, *, label_fn=None, retrain_fn=None, frames_dir=None,
              import_fn=None, today=None, min_total=MIN_NEW_BOXES, covered=MEANT_TO_COVER,
-             log=print):
+             labeller_fn=None, log=print):
     """One loop run. Returns {"summary": [lines], "retrained": bool, "result", "questions"}.
 
     label_fn(walk_dir) -> stats auto-labels one walk (Colab: current detector + OWLv2);
     None = no current model, so new walks wait. retrain_fn() -> `retrain.retrain` result
     dict (with "summary"); it reads the trainable walk frames itself.
+    labeller_fn() runs the labeller check on the gold set (task 29f, `colab_labeller_fn`);
+    its lines appear in the drift report. None = skipped.
     """
     from .walks import import_walks
     models_dir = Path(models_dir)
@@ -195,6 +197,11 @@ def run_loop(walks_src, models_dir, *, label_fn=None, retrain_fn=None, frames_di
 
     from .drift import record_run, report
     record_run(models_dir, go, result, today=today)
+    if labeller_fn is not None:
+        try:
+            labeller_fn()
+        except Exception as e:  # a report only: never stop the loop because of it
+            lines.append(f"labeller check skipped: {e}")
     lines += report(frames_dir, models_dir)
     qs = open_questions(frames_dir)
     lines.append(f"{len(qs)} question{'s' if len(qs) != 1 else ''} waiting for you (below); answers "
@@ -219,42 +226,280 @@ def colab_label_fn(checkpoint):
                                 loss_fn=lambda im, boxes: review_loss(model, im, boxes, classes))
 
 
-def prepare_training_photos(root, photos_dir=None, cap=300, run=None):
-    """Rebuild the original training photos on Colab's (temporary) disk, the same steps as the
-    spatial notebook: Open Images download, Alex's Drive footage, OWLv2 boxes. Only called
-    when a retrain will really happen (it takes a while)."""
+def colab_labeller_fn(models_dir, gold_dir, checkpoint, own_root="data/detection/own", log=print):
+    """labeller_fn for Colab (task 29f): the CURRENT model (after any promotion) and OWLv2
+    on the gold photos. They are loaded only when the gold set or the model changed."""
+    from . import drift, gold
+
+    def run():
+        manifest = gold.load_gold(gold_dir)
+        if manifest is None:
+            log("labeller check: no gold set yet")
+            return []
+        problems = gold.verify_gold(manifest, gold_dir)
+        if problems:
+            log(f"labeller check skipped: the gold set has problems ({problems[0]})")
+            return []
+
+        def make():
+            from .autobox import owl_detector
+            from .detector import _cut, detect, load_detector
+            from .selflabel import LOW_SCORE
+            model, classes = load_detector(checkpoint)
+            return (lambda im: detect(model, im, classes, min_score=LOW_SCORE), owl_detector(),
+                    lambda l: _cut(model, l, None))
+
+        return drift.run_labeller_check(models_dir, manifest, gold.gold_samples(manifest, gold_dir),
+                                        drift.file_id(checkpoint), make, own_root=own_root, log=log)
+
+    return run
+
+
+# ------------------------------------------------------------------ original training photos
+
+# Bump by one whenever a change to downloading, frame extraction, importing or auto-boxing
+# changes the photos/boxes made, so the saved snapshot below is rebuilt once (task 29d).
+PHOTO_PIPELINE_VERSION = 1
+SNAPSHOT_SUBDIR = "training_set"  # in Drive claudeknows_models/
+SNAPSHOT_TAR = "training_set.tar"
+SNAPSHOT_MANIFEST = "manifest.json"
+OWL_RUN_THRESHOLD = 0.3
+OWL_FILL_THRESHOLD = 0.4
+SKIP_FOOTAGE = ("walks",)  # walk videos are handled by the loop itself, not the original photos
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+def photo_settings(cap=300, negatives=120, fps=2.0):
+    """Everything that decides HOW the original photos, frames and boxes are made. A change
+    to any value rebuilds the snapshot (RESEARCH.md 2026-11-23)."""
+    from .autobox import OWL_MODEL
+    from .detection_data import DETECT_SIDE
+    from .frames import BLUR_THRESHOLD
+    return {"cap": cap, "negatives": negatives, "owl_threshold": OWL_RUN_THRESHOLD,
+            "owl_fill_threshold": OWL_FILL_THRESHOLD, "owl_model": OWL_MODEL, "fps": fps,
+            "DETECT_SIDE": DETECT_SIDE, "BLUR_THRESHOLD": BLUR_THRESHOLD,
+            "PHOTO_PIPELINE_VERSION": PHOTO_PIPELINE_VERSION}
+
+
+def footage_list(photos_dir):
+    """[[path, size], ...] of Alex's own photos/videos (not walks/), sorted. Names + sizes
+    only: cheap to list in Drive, and a replaced or new file changes it."""
+    root = Path(photos_dir) if photos_dir else None
+    if root is None or not root.is_dir():
+        return []
+    out = []
+    for f in root.rglob("*"):
+        rel = f.relative_to(root)
+        if f.is_file() and rel.parts[0] not in SKIP_FOOTAGE and not rel.name.startswith("."):
+            out.append([rel.as_posix(), f.stat().st_size])
+    return sorted(out)
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_commit():
+    import subprocess
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                              cwd=Path(__file__).parent, check=True).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def snapshot_id(snapshot_dir):
+    """First 12 hex characters of the manifest's sha256, or None if there is no snapshot."""
+    m = Path(snapshot_dir) / SNAPSHOT_MANIFEST
+    return _sha256(m)[:12] if m.exists() else None
+
+
+def _footage_change(old, new):
+    old, new = dict(map(tuple, old)), dict(map(tuple, new))
+    added = sorted(set(new) - set(old))
+    removed = sorted(set(old) - set(new))
+    changed = sorted(k for k in set(old) & set(new) if old[k] != new[k])
+    parts = [f"{len(x)} {w}" for x, w in ((added, "new"), (removed, "removed"), (changed, "changed"))
+             if x]
+    example = (added + changed + removed)[0]
+    return f"your own photos/videos changed ({', '.join(parts)}, e.g. {example})"
+
+
+def snapshot_mismatch(manifest, settings, footage):
+    """Why a saved snapshot can't be reused (plain language), or None if it can. Settings are
+    compared key by key; a key an older manifest lacks counts as changed."""
+    old = manifest.get("settings", {})
+    changed = sorted(k for k in set(old) | set(settings) if old.get(k, ...) != settings.get(k, ...))
+    if changed:
+        return f"photo settings changed ({', '.join(changed)})"
+    if manifest.get("footage", []) != footage:
+        return _footage_change(manifest.get("footage", []), footage)
+    return None
+
+
+def _photo_counts(files):
+    """{"web/keys": n, ...} images per source/object."""
+    counts = Counter()
+    for rel in files:
+        parts = rel.split("/")
+        if len(parts) >= 3 and rel.lower().endswith(IMAGE_EXTS):
+            counts[f"{parts[0]}/{parts[1]}"] += 1
+    return dict(sorted(counts.items()))
+
+
+def write_snapshot(root, snapshot_dir, settings, footage, today=None):
+    """Save every file under `root` as ONE uncompressed tar + manifest.json in `snapshot_dir`.
+    Both are written under temporary names and renamed, so a disconnect never leaves half a
+    snapshot (the manifest is renamed last). Returns the manifest."""
+    import os
+    import tarfile
+    root, snap = Path(root), Path(snapshot_dir)
+    snap.mkdir(parents=True, exist_ok=True)
+    files = sorted(f.relative_to(root).as_posix() for f in root.rglob("*") if f.is_file())
+    tmp_tar = snap / (SNAPSHOT_TAR + ".tmp")
+    with tarfile.open(tmp_tar, "w") as tar:
+        for rel in files:
+            tar.add(root / rel, arcname=rel, recursive=False)
+    manifest = {"date": (today or date.today()).isoformat(), "git_commit": _git_commit(),
+                "settings": settings, "footage": footage, "counts": _photo_counts(files),
+                "photos": sum(_photo_counts(files).values()),
+                "files": {rel: _sha256(root / rel) for rel in files}}
+    tmp_man = snap / (SNAPSHOT_MANIFEST + ".tmp")
+    tmp_man.write_text(json.dumps(manifest, indent=1, sort_keys=True))
+    os.replace(tmp_tar, snap / SNAPSHOT_TAR)
+    os.replace(tmp_man, snap / SNAPSHOT_MANIFEST)
+    return manifest
+
+
+def restore_snapshot(snapshot_dir, root, manifest):
+    """Copy the tar to local disk, unpack it next to `root` and check every file's sha256.
+    Only if all match does it replace `root`. Returns None if fine, else the reason."""
+    import shutil
+    import tarfile
+    root, snap = Path(root), Path(snapshot_dir)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    local = root.parent / f".{root.name}.snapshot.tar"
+    staging = root.parent / f".{root.name}.restoring"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        if not (snap / SNAPSHOT_TAR).exists():
+            return "the saved photo file is missing"
+        shutil.copyfile(snap / SNAPSHOT_TAR, local)  # one big Drive read, then local disk only
+        try:
+            with tarfile.open(local) as tar:
+                if hasattr(tarfile, "data_filter"):
+                    tar.extractall(staging, filter="data")
+                else:  # Python < 3.12
+                    tar.extractall(staging)
+        except (tarfile.TarError, OSError) as e:
+            return f"the saved photo file could not be unpacked ({e})"
+        bad = [rel for rel, h in sorted(manifest.get("files", {}).items())
+               if not (staging / rel).is_file() or _sha256(staging / rel) != h]
+        if bad:
+            return f"{len(bad)} saved file(s) missing or damaged, e.g. {bad[0]}"
+        shutil.rmtree(root, ignore_errors=True)
+        staging.rename(root)
+        return None
+    finally:
+        local.unlink(missing_ok=True)
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def build_training_photos(root, photos_dir=None, cap=300, negatives=120, fps=2.0, run=None):
+    """Make the original training photos from scratch, the same steps as the spatial
+    notebook: Open Images download, Alex's Drive footage, OWLv2 boxes (slow)."""
     import subprocess
     import sys
     run = run or (lambda cmd: subprocess.run(cmd, check=True))
     py = [sys.executable, "-m"]
-    run(py + ["claudeknows.detection_data", "download", "--out", str(root), "--cap", str(cap)])
+    run(py + ["claudeknows.detection_data", "download", "--out", str(root), "--cap", str(cap),
+              "--negatives", str(negatives)])
     if photos_dir and Path(photos_dir).is_dir():
-        run(py + ["claudeknows.detection_data", "import", str(photos_dir), "--root", str(root)])
-    run(py + ["claudeknows.autobox", "run", str(root), "--threshold", "0.3"])
-    run(py + ["claudeknows.autobox", "fill", str(root), "--threshold", "0.4"])
+        run(py + ["claudeknows.detection_data", "import", str(photos_dir), "--root", str(root),
+                  "--fps", str(fps)])
+    run(py + ["claudeknows.autobox", "run", str(root), "--threshold", str(OWL_RUN_THRESHOLD)])
+    run(py + ["claudeknows.autobox", "fill", str(root), "--threshold", str(OWL_FILL_THRESHOLD)])
+
+
+def prepare_training_photos(root, photos_dir=None, snapshot_dir=None, cap=300, negatives=120,
+                            fps=2.0, run=None, today=None, log=print):
+    """Put the original training photos in `root` (Colab's temporary disk).
+
+    With `snapshot_dir` (Drive `claudeknows_models/training_set/`, task 29d): reuse the saved
+    snapshot if its settings and Alex's own-footage list still match and every file's hash
+    checks out; otherwise build as before and save a new snapshot. So every retrain trains
+    on the SAME original photos, and skips re-downloading and OWLv2. Without `snapshot_dir`
+    it always builds. Only called when a retrain will really happen.
+    Returns {"snapshot": id or None, "reused": bool, "photos": n, "message": str}."""
+    settings = photo_settings(cap, negatives, fps)
+    if snapshot_dir is None:
+        build_training_photos(root, photos_dir, cap, negatives, fps, run)
+        return {"snapshot": None, "reused": False, "photos": None,
+                "message": "training photos: built fresh (no snapshot folder given)"}
+    snap = Path(snapshot_dir)
+    footage = footage_list(photos_dir)
+    manifest = _read(snap / SNAPSHOT_MANIFEST, None)
+    if manifest is None:
+        why = "no saved snapshot yet"
+    else:
+        why = snapshot_mismatch(manifest, settings, footage)
+        if why is None:
+            why = restore_snapshot(snap, root, manifest)
+            if why is None:
+                sid = snapshot_id(snap)
+                msg = f"training photos: snapshot {sid} ({manifest.get('photos', 0)} photos) reused"
+                log(msg)
+                return {"snapshot": sid, "reused": True, "photos": manifest.get("photos", 0),
+                        "message": msg}
+    log(f"training photos: building ({why}); this takes a while")
+    build_training_photos(root, photos_dir, cap, negatives, fps, run)
+    manifest = write_snapshot(root, snap, settings, footage, today)
+    sid = snapshot_id(snap)
+    msg = f"training photos rebuilt: {why}; new snapshot {sid} ({manifest['photos']} photos) saved"
+    log(msg)
+    return {"snapshot": sid, "reused": False, "photos": manifest["photos"], "message": msg}
 
 
 def colab_retrain_fn(root, models_dir, frames_dir, photos_dir=None, gold_dir=None, epochs=15,
-                     workers=2, noise_floor=True, log=print):
-    """retrain_fn for Colab: rebuild the original photos in `root`, measure any missing
-    noise-floor seeds (once ever; only with a gold set), then train + gate one candidate on
-    the original photos + approved walk frames. The gold set lives in `gold_dir` (Drive)."""
+                     workers=2, noise_floor=True, snapshot_dir=None, log=print):
+    """retrain_fn for Colab: put the original photos in `root` (from the Drive snapshot when
+    possible, task 29d), measure any missing noise-floor seeds (only with a gold set; again
+    whenever the snapshot changes), then train + gate one candidate on the original photos +
+    approved walk frames. The gold set lives in `gold_dir` (Drive)."""
     from argparse import Namespace
     from . import retrain
     from .selflabel import self_samples
+    snapshot_dir = snapshot_dir or Path(models_dir) / SNAPSHOT_SUBDIR
 
     def run():
-        prepare_training_photos(root, photos_dir)
+        photos = prepare_training_photos(root, photos_dir, snapshot_dir, log=log)
+        sid = photos["snapshot"]
         a = Namespace(root=root, gold_dir=gold_dir, epochs=epochs, batch_size=4, patience=4,
                       workers=workers, max_batches=None)
         base, gsamps, gold, kwargs = retrain._data(a, log)
         if noise_floor and gsamps:
-            missing = retrain.noise_progress(models_dir, retrain.recipe_of(kwargs), log=log)[2]
+            missing = retrain.noise_progress(models_dir, retrain.recipe_of(kwargs, training_set=sid),
+                                             log=log)[2]
             if missing:
                 log(f"measuring the noise floor first: {len(missing)} short training(s), saved one by one")
                 retrain.measure_noise_floor(base, gsamps, models_dir, gold_manifest=gold,
-                                            train_kwargs=kwargs, log=log)
+                                            train_kwargs=kwargs, training_set=sid, log=log)
         extra = self_samples(frames_dir, gold, log)
-        return retrain.retrain(base, extra, gsamps, models_dir, gold_manifest=gold,
-                               train_kwargs=kwargs, log=log)
+        current = retrain.load_versions(models_dir).get("current")
+        result = retrain.retrain(base, extra, gsamps, models_dir, gold_manifest=gold,
+                                 train_kwargs=kwargs, training_set=sid, log=log)
+        notes = [photos["message"]]
+        cur = next((e for e in retrain.load_versions(models_dir)["all"] if e["name"] == current), None)
+        if retrain.current_path(models_dir) and (cur is None or cur.get("training_set") != sid) \
+                and result.get("decision") is not None:
+            notes.append("note: the current model was trained on a different set of original photos, "
+                         "so this comparison is not yet like-for-like")
+        result["summary"] = notes + result.get("summary", [])
+        result["training_set"] = sid
+        return result
     return run

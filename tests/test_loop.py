@@ -1,18 +1,26 @@
+import json
 from collections import Counter
 from datetime import date
+from pathlib import Path
 
 from claudeknows import loop
 from claudeknows import selflabel as sl
-from tests.test_selflabel import BOTTLE, SHOE, cut, make_walk, scripted
+from tests.test_selflabel import BOTTLE, cut, make_walk, scripted
 
 QUIET = lambda *_: None  # noqa: E731
 
 
+def _moving(i):
+    x, y = (i % 9) * 0.1, 0.55 + (i // 9 % 4) * 0.1
+    return (x, y, x + 0.08, y + 0.08)
+
+
 def _label_fn(n, shoe_frames, audits=0):
     """Fake labellers: a steady bottle both see in every frame; a shoe only OWLv2 sees
-    in `shoe_frames` (so those frames become questions and are held back)."""
+    in `shoe_frames` (so those frames become questions and are held back). The shoe moves
+    between frames, so each frame is its own question (no grouping into tracks, task 29c)."""
     det = [[{"label": "water_bottle", "score": 0.9, "box": BOTTLE}] for _ in range(n)]
-    owl = [[("water_bottle", 0.8, BOTTLE)] + ([("shoes", 0.7, SHOE)] if i in shoe_frames else [])
+    owl = [[("water_bottle", 0.8, BOTTLE)] + ([("shoes", 0.7, _moving(i))] if i in shoe_frames else [])
            for i in range(n)]
     return lambda d: sl.label_walk(d, scripted(det), scripted(owl), cut, 0.3, audit_per_walk=audits,
                                    log=QUIET)
@@ -106,10 +114,148 @@ def test_question_view_shows_only_photo_box_and_object(tmp_path):
 
 def test_prepare_training_photos_same_steps_as_spatial_notebook(tmp_path):
     cmds = []
-    loop.prepare_training_photos("data/detection", tmp_path / "missing", run=cmds.append)
+    loop.prepare_training_photos("data/detection", tmp_path / "missing", run=cmds.append, log=QUIET)
     steps = [" ".join(c[2:4]) for c in cmds]
     assert steps == ["claudeknows.detection_data download", "claudeknows.autobox run",
                      "claudeknows.autobox fill"]  # no Drive folder -> no import step
     cmds.clear()
-    loop.prepare_training_photos("data/detection", tmp_path, run=cmds.append)
+    loop.prepare_training_photos("data/detection", tmp_path, run=cmds.append, log=QUIET)
     assert [" ".join(c[2:4]) for c in cmds][1] == "claudeknows.detection_data import"
+
+
+# ------------------------------------------------------------------ task 29d: snapshot
+
+class FakeBuild:
+    """Fake `run`: records commands; the download writes a few tiny photos into --out."""
+
+    def __init__(self):
+        self.cmds = []
+
+    def __call__(self, cmd):
+        self.cmds.append(cmd)
+        if cmd[3] == "download":
+            root = Path(cmd[cmd.index("--out") + 1])
+            for obj in ("keys", "shoes"):
+                (root / "web" / obj).mkdir(parents=True, exist_ok=True)
+                (root / "web" / obj / f"{obj}1.jpg").write_bytes(obj.encode() * 50)
+                (root / "web" / obj / "boxes.json").write_text('{"x": 1}')
+
+    def steps(self):
+        return [" ".join(c[2:4]) for c in self.cmds]
+
+
+def _footage(tmp_path):
+    photos = tmp_path / "claudeknows_photos"
+    (photos / "keys").mkdir(parents=True)
+    (photos / "keys" / "a.MOV").write_bytes(b"video")
+    (photos / "walks").mkdir()
+    (photos / "walks" / "walk1.MOV").write_bytes(b"walk")  # walks never count
+    return photos
+
+
+def _snap_tree(root):
+    return {f.relative_to(root).as_posix(): f.read_bytes() for f in Path(root).rglob("*") if f.is_file()}
+
+
+def test_snapshot_built_once_then_reused_with_identical_files(tmp_path):
+    photos, snap, run = _footage(tmp_path), tmp_path / "drive" / "training_set", FakeBuild()
+    first = loop.prepare_training_photos(tmp_path / "a", photos, snap, run=run, log=QUIET)
+    assert not first["reused"] and "no saved snapshot yet" in first["message"]
+    assert (snap / loop.SNAPSHOT_TAR).exists() and (snap / loop.SNAPSHOT_MANIFEST).exists()
+    assert not list(snap.glob("*.tmp"))
+    man = json.loads((snap / loop.SNAPSHOT_MANIFEST).read_text())
+    assert man["photos"] == 2 and man["counts"] == {"web/keys": 1, "web/shoes": 1}
+    assert man["footage"] == [["keys/a.MOV", 5]] and man["settings"]["cap"] == 300
+    assert first["snapshot"] == loop.snapshot_id(snap) and len(first["snapshot"]) == 12
+
+    run2 = FakeBuild()
+    second = loop.prepare_training_photos(tmp_path / "b", photos, snap, run=run2, log=QUIET)
+    assert run2.cmds == []  # no download, import or OWLv2
+    assert second["reused"] and second["snapshot"] == first["snapshot"]
+    assert second["message"] == f"training photos: snapshot {first['snapshot']} (2 photos) reused"
+    assert _snap_tree(tmp_path / "b") == _snap_tree(tmp_path / "a")
+
+
+def test_damaged_snapshot_rebuilds_with_message(tmp_path):
+    import tarfile
+    photos, snap = _footage(tmp_path), tmp_path / "training_set"
+    loop.prepare_training_photos(tmp_path / "a", photos, snap, run=FakeBuild(), log=QUIET)
+    # replace one photo inside the tar with different bytes (manifest hash no longer matches)
+    src = tmp_path / "evil"
+    src.mkdir()
+    (src / "keys1.jpg").write_bytes(b"different")
+    with tarfile.open(snap / loop.SNAPSHOT_TAR, "a") as tar:
+        tar.add(src / "keys1.jpg", arcname="web/keys/keys1.jpg")
+    run = FakeBuild()
+    out = loop.prepare_training_photos(tmp_path / "b", photos, snap, run=run, log=QUIET)
+    assert not out["reused"] and "damaged" in out["message"] and "web/keys/keys1.jpg" in out["message"]
+    assert run.steps()[0] == "claudeknows.detection_data download"
+    # the rebuilt snapshot is reused next time
+    assert loop.prepare_training_photos(tmp_path / "c", photos, snap, run=FakeBuild(), log=QUIET)["reused"]
+
+
+def test_new_own_footage_file_rebuilds(tmp_path):
+    photos, snap = _footage(tmp_path), tmp_path / "training_set"
+    first = loop.prepare_training_photos(tmp_path / "a", photos, snap, run=FakeBuild(), log=QUIET)
+    (photos / "walks" / "walk2.MOV").write_bytes(b"walk")  # a new walk alone: still reused
+    assert loop.prepare_training_photos(tmp_path / "b", photos, snap, run=FakeBuild(), log=QUIET)["reused"]
+    (photos / "keys" / "b.MOV").write_bytes(b"new video")
+    run = FakeBuild()
+    out = loop.prepare_training_photos(tmp_path / "c", photos, snap, run=run, log=QUIET)
+    assert not out["reused"] and "1 new, e.g. keys/b.MOV" in out["message"]
+    assert "claudeknows.detection_data import" in run.steps()
+    assert out["snapshot"] != first["snapshot"]
+
+
+def test_changed_photo_settings_rebuild_and_name_the_setting(tmp_path, monkeypatch):
+    photos, snap = _footage(tmp_path), tmp_path / "training_set"
+    loop.prepare_training_photos(tmp_path / "a", photos, snap, run=FakeBuild(), log=QUIET)
+    assert loop.prepare_training_photos(tmp_path / "b", photos, snap, run=FakeBuild(), log=QUIET)["reused"]
+    out = loop.prepare_training_photos(tmp_path / "c", photos, snap, fps=3.0, run=FakeBuild(), log=QUIET)
+    assert not out["reused"] and "photo settings changed (fps)" in out["message"]
+    monkeypatch.setattr(loop, "PHOTO_PIPELINE_VERSION", loop.PHOTO_PIPELINE_VERSION + 1)
+    out = loop.prepare_training_photos(tmp_path / "d", photos, snap, fps=3.0, run=FakeBuild(), log=QUIET)
+    assert not out["reused"] and "(PHOTO_PIPELINE_VERSION)" in out["message"]
+
+
+def test_old_manifest_without_new_keys_rebuilds_once(tmp_path):
+    photos, snap = _footage(tmp_path), tmp_path / "training_set"
+    loop.prepare_training_photos(tmp_path / "a", photos, snap, run=FakeBuild(), log=QUIET)
+    man = json.loads((snap / loop.SNAPSHOT_MANIFEST).read_text())
+    for k in ("fps", "DETECT_SIDE", "BLUR_THRESHOLD", "owl_model", "PHOTO_PIPELINE_VERSION"):
+        del man["settings"][k]
+    (snap / loop.SNAPSHOT_MANIFEST).write_text(json.dumps(man))
+    out = loop.prepare_training_photos(tmp_path / "b", photos, snap, run=FakeBuild(), log=QUIET)
+    assert not out["reused"]
+    assert "(BLUR_THRESHOLD, DETECT_SIDE, PHOTO_PIPELINE_VERSION, fps, owl_model)" in out["message"]
+    assert loop.prepare_training_photos(tmp_path / "c", photos, snap, run=FakeBuild(), log=QUIET)["reused"]
+
+
+def test_snapshot_id_changes_recipe_and_is_saved_with_version(tmp_path):
+    from claudeknows import retrain
+    kw = {"epochs": 15}
+    assert retrain.recipe_of(kw, training_set="aaa") != retrain.recipe_of(kw, training_set="bbb")
+    assert "training_set" not in retrain.recipe_of(kw)  # no snapshot: recipe as before
+    from claudeknows.detector import build_detector
+    m = build_detector(pretrained=False)
+    name = retrain.save_version(m, tmp_path, extra={"init": "coco", "training_set": "abc123"})
+    entry = retrain.load_versions(tmp_path)["all"][-1]
+    assert entry["name"] == name and entry["training_set"] == "abc123"
+
+
+def test_colab_retrain_fn_passes_snapshot_id_to_noise_floor_and_candidate(tmp_path, monkeypatch):
+    from claudeknows import retrain
+    seen = {}
+    monkeypatch.setattr(loop, "prepare_training_photos",
+                        lambda root, photos, snap, log: {"snapshot": "abc123def456", "reused": True,
+                                                         "photos": 2, "message": "training photos: reused"})
+    monkeypatch.setattr(retrain, "_data", lambda a, log: ([], ["g"], {"created": "x"}, {"epochs": 1}))
+    monkeypatch.setattr(retrain, "measure_noise_floor",
+                        lambda *a, training_set=None, **k: seen.setdefault("floor", training_set))
+    monkeypatch.setattr(retrain, "retrain", lambda *a, training_set=None, **k: (
+        seen.setdefault("retrain", training_set), {"summary": ["candidate x"], "decision": None})[1])
+    monkeypatch.setattr("claudeknows.selflabel.self_samples", lambda *a: [])
+    out = loop.colab_retrain_fn(tmp_path / "root", tmp_path / "models", tmp_path / "frames", log=QUIET)()
+    assert seen == {"floor": "abc123def456", "retrain": "abc123def456"}
+    assert out["summary"] == ["training photos: reused", "candidate x"]
+    assert out["training_set"] == "abc123def456"
