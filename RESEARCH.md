@@ -3,6 +3,67 @@
 Daily notes from the research advisor. The dev routine reads the roadmap tasks tagged
 `[research YYYY-MM-DD]`; this file holds the reasoning and sources behind them.
 
+## 2026-11-28
+
+**Summary.** Fourteen pull requests are open; the newest, #69 (dev 11-27, task 29f), already contains #68, #67, #66, #65, #64, #63,
+#62, #61, #60, #59, #58, #57 and #55, so I started from it. 29f is done, so the next task the dev routine builds (Mon 11-30) is **29g,
+OWLv2 "text + examples" queries**. Before it is built I checked 29g's plan line by line against the current OWLv2 code in transformers
+(`modeling_owlv2.py` on main) and against Google's own reference code for example-based OWL-ViT queries (scenic `owl_vit`,
+Apache-2.0). The transformers parts of the plan are right: `out.text_embeds` are already normalised, `out.image_embeds` is the
+(1, 60, 60, D) patch map that `class_predictor` expects after a reshape, `class_predictor` works without `query_mask`, and
+`image_guided_detection` still ignores any box (it now picks the patch with the highest objectness). **One step is weaker than the
+reference:** 29g picks the patch whose predicted box best overlaps the example box. Google's code warns that only ONE patch per object
+holds the object's embedding (DETR-style matching) and its neighbours with nearly the same box are "background"; it takes every patch
+within 80% of the best overlap and keeps the one least like the average patch. Picking plain highest-overlap would often pick a
+background vector, making "examples" mode look useless for keys when it is not. **One roadmap change:** a refinement of **29g** to
+use Google's selection rule. New-model scan: nothing new (no new Apache-2.0 detector; Depth Anything 3 Small is Apache-2.0 as noted
+on 10-19; DepthART still has no licence or weights).
+
+### Recommendations
+
+**1. Pick the example's embedding the way Google's reference code does (refines 29g; tiny effort, avoids a misleading result).**
+- What: when turning one of Alex's checked key boxes (or an Open Images train box) into an OWLv2 query, compute the raw class
+  embedding of every patch (`_, raw = model.class_predictor(image_feats)`, no query), find all patches whose predicted box overlaps
+  the example box by at least 80% of the best overlap, and keep the one with the lowest dot product with the mean of all patches.
+  Still skip examples whose best overlap is below 0.5, and log how many were between 0.5 and 0.65 (the paper's own fallback point).
+- Why here: 29g exists because OWLv2 alone decides which key boxes exist, and Alex's "yes" answers are the only checked key boxes
+  from his rooms. If the picker grabs a background vector, the averaged keys query drifts toward "table surface" and the 29g report
+  would say examples don't help, steering Alex away from the one tool aimed at keys. Google's comment in `embed_image_query`: "only
+  one embedding feature for each object is 'good' and the rest are 'background' ... it should be dissimilar to the mean embedding".
+  The OWL-ViT paper's appendix describes the same outlier rule (with a 0.65 IoU fallback in ~10% of cases).
+- Expected gain: no change in default mode (`text`, `a = 0` still reproduces today exactly); in `mix`/`examples` mode, query
+  vectors that actually describe the object, so the comparison 29g reports is fair. Effort: ~10 lines + 1 changed test. Risk: very
+  low. Licence: own code following an Apache-2.0 reference (no code copied).
+- How to build it: see roadmap 29g (the example-embedding sentence and the picker test were rewritten).
+
+### Considered but not recommended
+- **Use transformers' `image_guided_detection` / `embed_image_query`:** still box-less (highest objectness patch of the whole query
+  photo); a cluttered table photo would give the most "object-like" thing, not the keys. 29g already says not to use it.
+- **Widen 29g's cut-off sweep (0.15-0.6) for "examples" mode in case image queries score on a different scale:** plausible but I
+  found no evidence; the report will show it if scores bunch at one end.
+- **Visual-prompt detectors (DETR-ViP, ICLR 2026; VisTex-OVLM, ICCV 2025; LMP multi-modal prototypes, Feb 2026):** they support the
+  idea behind 29g (pictures beat words for rare objects; text + pictures together do best) but would mean a new labeller; not worth
+  it before 29g's simple version is measured. Licences not checked (pages not reachable from this session).
+- **New detectors / depth models:** nothing new (see summary).
+
+### For Alex to decide
+- Nothing new. Still open from earlier: hard photos in the gold set (11-26); 29h, 29i, 29j before your first real walk; RF-DETR /
+  DEIMv2 (10-16); Depth Anything V3 Small vs V2 Small (10-19); SAM 3 as a third labeller (11-07).
+
+### Sources
+- Repo: ROADMAP 29g; `claudeknows/autobox.py` (`PROMPTS`, `owl_detector`, `post_process`).
+- transformers OWLv2 (main): https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/owlv2/modeling_owlv2.py
+  (`Owlv2ClassPredictionHead.forward`, `class_predictor`, `embed_image_query`, `image_guided_detection`, `forward`)
+- Google scenic OWL-ViT reference (Apache-2.0), `embed_image_query` with the 0.8 x best-IoU candidates and least-similar-to-mean rule:
+  https://raw.githubusercontent.com/google-research/scenic/main/scenic/projects/owl_vit/notebooks/inference.py
+- OWL-ViT paper (Minderer et al., ECCV 2022; appendix on image-conditioned detection, IoU 0.65 fallback): https://arxiv.org/abs/2205.06230
+  (judged from search summary; arxiv mirrors were not reachable)
+- Visual Textualization for Image Prompted Object Detection (ICCV 2025): https://arxiv.org/abs/2506.23785 ; Learning Multi-Modal
+  Prototypes for Cross-Domain Few-Shot Object Detection (2026): https://arxiv.org/abs/2602.18811 (both from search summaries)
+- Depth Anything 3 Small model card (Apache-2.0): https://huggingface.co/depth-anything/da3-small ; DepthART report:
+  https://finance.sina.cn/stock/jdts/2026-10-07/detail-iniuksym4764240.d.html
+- Apache-2.0 detector list: https://roboflow.com/models-by-license/apache-2-0-licensed-object-detection
+
 ## 2026-11-27
 
 **Summary.** Twelve pull requests are open; the newest, #67 (research 11-26), already contains #66, #65, #64, #63, #62, #61, #60,
